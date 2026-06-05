@@ -17,7 +17,7 @@ use rustc_hash::FxHashMap;
 use ublox::proto23::PacketRef;
 use ublox::{Parser, UbxPacket};
 
-// GNSS ids (ubxbin/common.go).
+// UBX protocol GNSS identifier values used by RXM-RAWX.
 const GPS: u8 = 0;
 const SBAS: u8 = 1;
 const GAL: u8 = 2;

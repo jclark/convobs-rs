@@ -69,14 +69,24 @@ const CASES: &[Case] = &[
     },
     Case {
         name: "rtcm_20260519",
-        flags: &["--from", "rtcm", "--date-from-filename", "--rtcm-omit-zero-do"],
+        flags: &[
+            "--from",
+            "rtcm",
+            "--date-from-filename",
+            "--rtcm-omit-zero-do",
+        ],
         input: "packet-rtcm-20260519.rtcm",
         golden: "packet-rtcm-20260519.obs.gz",
         ignore_marker: true,
     },
     Case {
         name: "um980_rtcm_20260527",
-        flags: &["--from", "rtcm", "--date-from-filename", "--rtcm-omit-zero-do"],
+        flags: &[
+            "--from",
+            "rtcm",
+            "--date-from-filename",
+            "--rtcm-omit-zero-do",
+        ],
         input: "um980-rtcm-20260527.rtcm",
         golden: "um980-rtcm-20260527.obs.gz",
         ignore_marker: true,

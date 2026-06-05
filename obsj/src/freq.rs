@@ -75,15 +75,42 @@ mod tests {
     #[test]
     fn fixed_band_frequencies() {
         // A representative entry from each fixed (non-GLONASS) system/band.
-        assert_eq!(signal_frequency_hz(b'G', sig(b"1C"), None), Some(1575.420e6));
-        assert_eq!(signal_frequency_hz(b'G', sig(b"2L"), None), Some(1227.600e6));
-        assert_eq!(signal_frequency_hz(b'G', sig(b"5I"), None), Some(1176.450e6));
-        assert_eq!(signal_frequency_hz(b'E', sig(b"5Q"), None), Some(1176.450e6));
-        assert_eq!(signal_frequency_hz(b'E', sig(b"6B"), None), Some(1278.750e6));
-        assert_eq!(signal_frequency_hz(b'C', sig(b"2I"), None), Some(1561.098e6));
-        assert_eq!(signal_frequency_hz(b'J', sig(b"1C"), None), Some(1575.420e6));
-        assert_eq!(signal_frequency_hz(b'S', sig(b"5I"), None), Some(1176.450e6));
-        assert_eq!(signal_frequency_hz(b'I', sig(b"9A"), None), Some(2492.028e6));
+        assert_eq!(
+            signal_frequency_hz(b'G', sig(b"1C"), None),
+            Some(1575.420e6)
+        );
+        assert_eq!(
+            signal_frequency_hz(b'G', sig(b"2L"), None),
+            Some(1227.600e6)
+        );
+        assert_eq!(
+            signal_frequency_hz(b'G', sig(b"5I"), None),
+            Some(1176.450e6)
+        );
+        assert_eq!(
+            signal_frequency_hz(b'E', sig(b"5Q"), None),
+            Some(1176.450e6)
+        );
+        assert_eq!(
+            signal_frequency_hz(b'E', sig(b"6B"), None),
+            Some(1278.750e6)
+        );
+        assert_eq!(
+            signal_frequency_hz(b'C', sig(b"2I"), None),
+            Some(1561.098e6)
+        );
+        assert_eq!(
+            signal_frequency_hz(b'J', sig(b"1C"), None),
+            Some(1575.420e6)
+        );
+        assert_eq!(
+            signal_frequency_hz(b'S', sig(b"5I"), None),
+            Some(1176.450e6)
+        );
+        assert_eq!(
+            signal_frequency_hz(b'I', sig(b"9A"), None),
+            Some(2492.028e6)
+        );
     }
 
     #[test]

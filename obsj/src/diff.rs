@@ -590,7 +590,10 @@ mod tests {
         assert_eq!(db.marker.number, "");
         assert_eq!(da.marker.type_, "");
         assert_eq!(db.marker.type_, "GEODETIC");
-        assert_eq!((da.observer.as_str(), db.observer.as_str()), ("obs-a", "obs-b"));
+        assert_eq!(
+            (da.observer.as_str(), db.observer.as_str()),
+            ("obs-a", "obs-b")
+        );
         // agency matches -> not reported.
         assert_eq!((da.agency.as_str(), db.agency.as_str()), ("", ""));
         assert_eq!(da.receiver.number, "rx-a");
@@ -599,6 +602,7 @@ mod tests {
         assert_eq!(da.antenna.type_, "ant-a");
         assert_eq!(db.antenna.type_, "ant-b");
         assert_eq!(da.antenna.number, ""); // matches
+
         // approx position within tolerance -> not reported.
         assert_eq!(da.approx_position, None);
         assert_eq!(db.approx_position, None);

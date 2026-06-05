@@ -895,7 +895,10 @@ mod tests {
         // Previous near week end, offset near week start -> wrap forward a week.
         let prev_ms = prev_week * WEEK_MS + (WEEK_MS - 1000);
         let got = continuity_candidate(prev_week, 1000, prev_ms);
-        assert_eq!(got.0, ((prev_week + 1) * WEEK_MS + 1000) * RINEX_TICKS_PER_MS);
+        assert_eq!(
+            got.0,
+            ((prev_week + 1) * WEEK_MS + 1000) * RINEX_TICKS_PER_MS
+        );
     }
 
     #[test]
@@ -966,7 +969,10 @@ mod tests {
         let freq = 1575.420e6;
         // prr = rough + fine = 100 + (-0.2) = 99.8; the result is f32-narrowed.
         let want = ((99.8_f64 * freq / SPEED_OF_LIGHT) as f32) as f64;
-        assert_eq!(doppler(Some(100), Some(-0.2), Some(freq), false), Some(want));
+        assert_eq!(
+            doppler(Some(100), Some(-0.2), Some(freq), false),
+            Some(want)
+        );
         // The spec sign flips the polarity before narrowing.
         let want_neg = ((-99.8_f64 * freq / SPEED_OF_LIGHT) as f32) as f64;
         assert_eq!(
@@ -990,15 +996,7 @@ mod tests {
     // ---- frame scanning helpers ----
 
     fn frame(mt: u16) -> Vec<u8> {
-        vec![
-            0xD3,
-            0,
-            0,
-            (mt >> 4) as u8,
-            ((mt & 0xF) << 4) as u8,
-            0,
-            0,
-        ]
+        vec![0xD3, 0, 0, (mt >> 4) as u8, ((mt & 0xF) << 4) as u8, 0, 0]
     }
 
     #[test]

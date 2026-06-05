@@ -199,7 +199,10 @@ mod tests {
             .to_string()
             .contains("divide one GPS day"));
         // A valid interval returns its length in ticks.
-        assert_eq!(decimation_interval_ticks(5_000_000_000).unwrap(), 50_000_000);
+        assert_eq!(
+            decimation_interval_ticks(5_000_000_000).unwrap(),
+            50_000_000
+        );
         assert!(validate_decimation_interval(5_000_000_000).is_ok());
     }
 
@@ -266,8 +269,14 @@ mod tests {
         .unwrap();
         let r = &sink.sink;
         assert_eq!(r.obs.len(), 2);
-        assert_eq!((r.obs[0].v.arc, r.obs[0].v.hc, r.obs[0].v.bt), (1, false, false));
-        assert_eq!((r.obs[1].v.arc, r.obs[1].v.hc, r.obs[1].v.bt), (1, false, true));
+        assert_eq!(
+            (r.obs[0].v.arc, r.obs[0].v.hc, r.obs[0].v.bt),
+            (1, false, false)
+        );
+        assert_eq!(
+            (r.obs[1].v.arc, r.obs[1].v.hc, r.obs[1].v.bt),
+            (1, false, true)
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@ convobs - convert GNSS observation data
 &nbsp;&nbsp;&nbsp;&nbsp;[**--packet-log**] [**--to** **rinex**|**obsj**]\
 &nbsp;&nbsp;&nbsp;&nbsp;[**--date** *YYYYMMDD*|**--recent**|**-f**|**--date-from-filename**]\
 &nbsp;&nbsp;&nbsp;&nbsp;[**--interval** *seconds*] [**-p**|**--ppp-ar**]\
+&nbsp;&nbsp;&nbsp;&nbsp;[**--rinex-backend** **auto**|**internal**|**external**]\
 &nbsp;&nbsp;&nbsp;&nbsp;[**--rinex-version** *version*] [**--program** *name*] [**--run-by** *name*]\
 &nbsp;&nbsp;&nbsp;&nbsp;[**--antenna** *type*] [**--approx-pos** *X,Y,Z*] [**--comment** *text*]\
 &nbsp;&nbsp;&nbsp;&nbsp;[**--rtcm-strict-prr**] [**--rtcm-omit-zero-do**]\
@@ -74,6 +75,13 @@ The default is 0, which disables decimation.
 **-p**, **--ppp-ar**
 : Produce output optimized for PPP with ambiguity resolution (PPP-AR), such as CSRS-PPP. Currently this removes
 observations that have no carrier phase.
+
+**--rinex-backend** **auto**|**internal**|**external**
+: Select the backend used to read and write RINEX files. **internal** is the self-contained backend, which handles
+plain RINEX 3.x observation files. **external** uses the bundled `rinex` crate, which additionally supports CRINEX
+(Hatanaka-compressed) input; it is available only in builds compiled with the `rinex-crate` feature. The default,
+**auto**, uses the internal backend, falling back to the external backend when the input is CRINEX. This option is
+valid only with RINEX input or output.
 
 ## RTCM week inference
 

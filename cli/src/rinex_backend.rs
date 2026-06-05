@@ -7,6 +7,7 @@
 //! (Hatanaka) input, detected from content. In a lean build, asking for the crate
 //! backend (or feeding CRINEX) fails cleanly.
 
+use obsj::error::Error;
 use obsj::obs::{Metadata, SignalObservation};
 use obsj::sink::Sink;
 use std::io::{BufRead, Write};
@@ -41,22 +42,22 @@ pub fn parse_backend(s: &str) -> Result<Option<RinexBackend>, String> {
 pub fn open_rinex_input(
     explicit: Option<RinexBackend>,
     mut r: Box<dyn BufRead>,
-) -> Result<(RinexBackend, Box<dyn BufRead>), String> {
-    let crinex = is_crinex(r.fill_buf().map_err(|e| e.to_string())?);
+) -> Result<(RinexBackend, Box<dyn BufRead>), Error> {
+    let crinex = is_crinex(r.fill_buf()?);
     Ok((resolve_input(explicit, crinex)?, r))
 }
 
-fn resolve_input(explicit: Option<RinexBackend>, crinex: bool) -> Result<RinexBackend, String> {
+fn resolve_input(explicit: Option<RinexBackend>, crinex: bool) -> Result<RinexBackend, Error> {
     match explicit {
-        Some(RinexBackend::Diy) if crinex => Err(
+        Some(RinexBackend::Diy) if crinex => Err(Error::Rinex(
             "CRINEX input needs the crate RINEX backend; do not pass --rinex-backend diy".into(),
-        ),
-        Some(RinexBackend::Crate) if !crate_available() => Err(NOT_COMPILED.into()),
+        )),
+        Some(RinexBackend::Crate) if !crate_available() => Err(Error::Rinex(NOT_COMPILED.into())),
         Some(b) => Ok(b),
-        None if crinex && !crate_available() => Err(
+        None if crinex && !crate_available() => Err(Error::Rinex(
             "CRINEX input needs the crate RINEX backend; rebuild with --features rinex-crate"
                 .into(),
-        ),
+        )),
         None if crinex => Ok(RinexBackend::Crate),
         None => Ok(RinexBackend::Diy),
     }
@@ -72,7 +73,7 @@ fn is_crinex(head: &[u8]) -> bool {
 pub fn read_rinex(
     backend: RinexBackend,
     r: Box<dyn BufRead>,
-) -> Result<(Metadata, Vec<SignalObservation>), String> {
+) -> Result<(Metadata, Vec<SignalObservation>), Error> {
     match backend {
         RinexBackend::Diy => obsj::rinexobs::read_observation_file(r),
         RinexBackend::Crate => read_crate(r),
@@ -80,7 +81,7 @@ pub fn read_rinex(
 }
 
 /// Builds a RINEX output sink for the given backend (output is never CRINEX).
-pub fn rinex_sink(backend: RinexBackend, w: Box<dyn Write>) -> Result<Box<dyn Sink>, String> {
+pub fn rinex_sink(backend: RinexBackend, w: Box<dyn Write>) -> Result<Box<dyn Sink>, Error> {
     match backend {
         RinexBackend::Diy => Ok(Box::new(obsj::rinexobs::RinexSink::new(w))),
         RinexBackend::Crate => sink_crate(w),
@@ -88,21 +89,21 @@ pub fn rinex_sink(backend: RinexBackend, w: Box<dyn Write>) -> Result<Box<dyn Si
 }
 
 #[cfg(feature = "rinex-crate")]
-fn read_crate(r: Box<dyn BufRead>) -> Result<(Metadata, Vec<SignalObservation>), String> {
+fn read_crate(r: Box<dyn BufRead>) -> Result<(Metadata, Vec<SignalObservation>), Error> {
     rinex_obsj::read_observation_file(r)
 }
 
 #[cfg(not(feature = "rinex-crate"))]
-fn read_crate(_r: Box<dyn BufRead>) -> Result<(Metadata, Vec<SignalObservation>), String> {
-    Err(NOT_COMPILED.into())
+fn read_crate(_r: Box<dyn BufRead>) -> Result<(Metadata, Vec<SignalObservation>), Error> {
+    Err(Error::Rinex(NOT_COMPILED.into()))
 }
 
 #[cfg(feature = "rinex-crate")]
-fn sink_crate(w: Box<dyn Write>) -> Result<Box<dyn Sink>, String> {
+fn sink_crate(w: Box<dyn Write>) -> Result<Box<dyn Sink>, Error> {
     Ok(Box::new(rinex_obsj::RinexSink::new(w)))
 }
 
 #[cfg(not(feature = "rinex-crate"))]
-fn sink_crate(_w: Box<dyn Write>) -> Result<Box<dyn Sink>, String> {
-    Err(NOT_COMPILED.into())
+fn sink_crate(_w: Box<dyn Write>) -> Result<Box<dyn Sink>, Error> {
+    Err(Error::Rinex(NOT_COMPILED.into()))
 }

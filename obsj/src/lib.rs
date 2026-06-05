@@ -8,6 +8,7 @@
 
 pub mod arc;
 pub mod diff;
+pub mod error;
 pub mod freq;
 pub mod json;
 pub mod obs;
@@ -23,6 +24,7 @@ pub mod rtcm;
 pub mod ubx;
 
 pub use arc::{ArcToLl, LossOfLockSink};
+pub use error::{Error, Result};
 pub use json::{read_obsj, ObsJsonSink};
 pub use obs::{GpsTime, Metadata, SatId, SigId, SignalObservation, SignalValues};
 pub use sink::Sink;

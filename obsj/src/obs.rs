@@ -149,8 +149,8 @@ impl fmt::Display for GpsTime {
 }
 
 /// Parses an obsj `t` label: `YYYY-MM-DDTHH:MM:SS.fffffff` (7 frac digits).
-pub fn parse_time(s: &str) -> Result<GpsTime, String> {
-    let err = || format!("rinex: invalid time {:?}", s);
+pub fn parse_time(s: &str) -> Result<GpsTime, crate::error::Error> {
+    let err = || crate::error::Error::Obsj(format!("invalid time {s:?}"));
     let (date, time) = s.split_once('T').ok_or_else(err)?;
     let d: Vec<&str> = date.split('-').collect();
     if d.len() != 3 {

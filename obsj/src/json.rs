@@ -6,6 +6,7 @@
 //! `t` (observation vs metadata record) and rejects the legacy keys
 //! `ssi`/`lli`/`ll`.
 
+use crate::error::{Error, Result};
 use crate::obs::{
     Antenna, GpsTime, Instant, Marker, Metadata, MetadataRun, Receiver, SatId, SigId,
     SignalObservation, SignalValues,
@@ -46,16 +47,18 @@ impl<W: Write> Sink for ObsJsonSink<W> {
 
 /// Streams obsj records from `r` into `sink` — O(1) memory: each line is parsed
 /// and pushed (metadata or observation) without buffering the whole file.
-pub fn stream_obsj<S: Sink>(r: impl BufRead, sink: &mut S) -> Result<(), String> {
+pub fn stream_obsj<S: Sink>(r: impl BufRead, sink: &mut S) -> Result<()> {
     for (i, line) in r.lines().enumerate() {
-        let line = line.map_err(|e| e.to_string())?;
+        let line = line?;
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-        match parse_record(trimmed).map_err(|e| format!("obsj line {}: {}", i + 1, e))? {
-            Record::Observation(o) => sink.observation(&o).map_err(|e| e.to_string())?,
-            Record::Metadata(m) => sink.metadata(&m).map_err(|e| e.to_string())?,
+        match parse_record(trimmed)
+            .map_err(|e| Error::Obsj(format!("obsj line {}: {}", i + 1, e)))?
+        {
+            Record::Observation(o) => sink.observation(&o)?,
+            Record::Metadata(m) => sink.metadata(&m)?,
         }
     }
     Ok(())
@@ -64,7 +67,7 @@ pub fn stream_obsj<S: Sink>(r: impl BufRead, sink: &mut S) -> Result<(), String>
 /// Reads all obsj records into memory, merging metadata and collecting
 /// observations. Used where random access is needed (the diff comparator);
 /// conversion uses [`stream_obsj`] instead.
-pub fn read_obsj(r: impl BufRead) -> Result<(Metadata, Vec<SignalObservation>), String> {
+pub fn read_obsj(r: impl BufRead) -> Result<(Metadata, Vec<SignalObservation>)> {
     #[derive(Default)]
     struct Collector {
         meta: Metadata,
@@ -138,43 +141,53 @@ struct RawRecord<'a> {
 }
 
 /// Parses a raw JSON number token with std's correctly-rounded float parser.
-fn token_f64(v: Option<&RawValue>) -> Result<Option<f64>, String> {
+fn token_f64(v: Option<&RawValue>) -> Result<Option<f64>> {
     match v {
         Some(raw) => raw
             .get()
             .parse::<f64>()
             .map(Some)
-            .map_err(|_| format!("invalid number {:?}", raw.get())),
+            .map_err(|_| Error::Obsj(format!("invalid number {:?}", raw.get()))),
         None => Ok(None),
     }
 }
 
-fn token_f32(v: Option<&RawValue>) -> Result<Option<f32>, String> {
+fn token_f32(v: Option<&RawValue>) -> Result<Option<f32>> {
     match v {
         Some(raw) => raw
             .get()
             .parse::<f32>()
             .map(Some)
-            .map_err(|_| format!("invalid number {:?}", raw.get())),
+            .map_err(|_| Error::Obsj(format!("invalid number {:?}", raw.get()))),
         None => Ok(None),
     }
 }
 
-fn parse_record(line: &str) -> Result<Record, String> {
-    let r: RawRecord = serde_json::from_str(line).map_err(|e| e.to_string())?;
+fn parse_record(line: &str) -> Result<Record> {
+    let r: RawRecord = serde_json::from_str(line).map_err(|e| Error::Obsj(e.to_string()))?;
     match r.t {
         Some(t) => {
             if r.ssi.is_some() {
-                return Err("obsj field \"ssi\" is not supported".to_string());
+                return Err(Error::Obsj(
+                    "obsj field \"ssi\" is not supported".to_string(),
+                ));
             }
             if r.lli.is_some() {
-                return Err("obsj field \"lli\" is not supported".to_string());
+                return Err(Error::Obsj(
+                    "obsj field \"lli\" is not supported".to_string(),
+                ));
             }
             if r.ll.is_some() {
-                return Err("obsj field \"ll\" is not supported; use \"arc\"".to_string());
+                return Err(Error::Obsj(
+                    "obsj field \"ll\" is not supported; use \"arc\"".to_string(),
+                ));
             }
-            let sat = r.sat.ok_or("obsj observation record missing \"sat\"")?;
-            let sig = r.sig.ok_or("obsj observation record missing \"sig\"")?;
+            let sat = r.sat.ok_or_else(|| {
+                Error::Obsj("obsj observation record missing \"sat\"".to_string())
+            })?;
+            let sig = r.sig.ok_or_else(|| {
+                Error::Obsj("obsj observation record missing \"sig\"".to_string())
+            })?;
             let v = SignalValues {
                 frq: r.frq,
                 pr: token_f64(r.pr)?,

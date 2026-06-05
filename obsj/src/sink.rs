@@ -1,6 +1,7 @@
 //! The `Sink` pipeline: converters push records through optional filters
 //! (decimation, require-carrier-phase) into an output writer.
 
+use crate::error::{Error, Result};
 use crate::obs::{GpsTime, Metadata, SignalObservation, TICK_NS};
 use std::io;
 
@@ -16,20 +17,26 @@ const DECIMATION_ROUND_TICKS: i64 = 100 * 1_000_000 / TICK_NS; // 100 ms in tick
 
 /// Validates a decimation interval (nanoseconds) against the same rules Go uses,
 /// returning the interval in ticks.
-pub fn decimation_interval_ticks(interval_ns: i64) -> Result<i64, String> {
+pub fn decimation_interval_ticks(interval_ns: i64) -> Result<i64> {
     if interval_ns < 1_000_000_000 {
-        return Err("rinex: decimation interval must be at least 1 second".to_string());
+        return Err(Error::Interval(
+            "decimation interval must be at least 1 second".to_string(),
+        ));
     }
     if interval_ns % TICK_NS != 0 {
-        return Err("rinex: decimation interval must be a multiple of 100ns".to_string());
+        return Err(Error::Interval(
+            "decimation interval must be a multiple of 100ns".to_string(),
+        ));
     }
     if (24 * 3600 * 1_000_000_000i64) % interval_ns != 0 {
-        return Err("rinex: decimation interval must divide one GPS day exactly".to_string());
+        return Err(Error::Interval(
+            "decimation interval must divide one GPS day exactly".to_string(),
+        ));
     }
     Ok(interval_ns / TICK_NS)
 }
 
-pub fn validate_decimation_interval(interval_ns: i64) -> Result<(), String> {
+pub fn validate_decimation_interval(interval_ns: i64) -> Result<()> {
     decimation_interval_ticks(interval_ns).map(|_| ())
 }
 

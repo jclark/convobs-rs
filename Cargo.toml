@@ -24,6 +24,7 @@ flate2 = "1"
 rustc-hash = "2"
 # SIMD hex decoding for the packet-log hot path.
 faster-hex = "0.10"
+thiserror = "2"
 obsj = { path = "obsj" }
 rinex-obsj = { path = "rinex-obsj" }
 

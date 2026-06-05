@@ -13,6 +13,7 @@
 //!
 //! [`LossOfLockSink`]: crate::arc::LossOfLockSink
 
+use crate::error::{Error, Result};
 use crate::freq::signal_frequency_hz;
 use crate::obs::*;
 use crate::sink::Sink;
@@ -192,17 +193,19 @@ impl<S: Sink> Converter<S> {
     }
 
     /// Forwards metadata directly to the sink (for the initial CLI metadata).
-    pub fn sink_metadata(&mut self, m: &Metadata) -> Result<(), String> {
-        self.sink.metadata(m).map_err(|e| e.to_string())
+    pub fn sink_metadata(&mut self, m: &Metadata) -> Result<()> {
+        self.sink.metadata(m)?;
+        Ok(())
     }
 
-    pub fn flush(&mut self) -> Result<(), String> {
-        self.sink.flush().map_err(|e| e.to_string())
+    pub fn flush(&mut self) -> Result<()> {
+        self.sink.flush()?;
+        Ok(())
     }
 
     /// Converts one RTCM frame. `week` is the per-message epoch constraint.
     /// Returns whether an observation/metadata record was produced.
-    pub fn convert_frame(&mut self, frame: &[u8], week: TimeInterval) -> Result<bool, String> {
+    pub fn convert_frame(&mut self, frame: &[u8], week: TimeInterval) -> Result<bool> {
         let mf = match MessageFrame::new(frame) {
             Ok(m) => m,
             Err(_) => {
@@ -329,8 +332,8 @@ impl<S: Sink> Converter<S> {
         }
     }
 
-    fn emit_metadata(&mut self, meta: &Metadata) -> Result<bool, String> {
-        self.sink.metadata(meta).map_err(|e| e.to_string())?;
+    fn emit_metadata(&mut self, meta: &Metadata) -> Result<bool> {
+        self.sink.metadata(meta)?;
         Ok(true)
     }
 
@@ -342,7 +345,7 @@ impl<S: Sink> Converter<S> {
         epoch_time: u32,
         seg: &Seg,
         week: TimeInterval,
-    ) -> Result<bool, String>
+    ) -> Result<bool>
     where
         Seg: HasMsmData,
     {
@@ -367,7 +370,7 @@ impl<S: Sink> Converter<S> {
         gnss: Gnss,
         sat: &SatData,
         sig: &SigData,
-    ) -> Result<bool, String> {
+    ) -> Result<bool> {
         let sys = gnss.rinex_sys();
         let sat_num = rinex_sat_num(gnss, sat.satellite_id);
         if sat_num == 0 {
@@ -419,7 +422,7 @@ impl<S: Sink> Converter<S> {
         if !o.has_any_code() {
             return Ok(false);
         }
-        self.sink.observation(&o).map_err(|e| e.to_string())?;
+        self.sink.observation(&o)?;
         Ok(true)
     }
 
@@ -443,12 +446,7 @@ impl<S: Sink> Converter<S> {
         (ll, s.half_cycle)
     }
 
-    fn resolve_time(
-        &self,
-        epoch_time: u32,
-        gnss: Gnss,
-        week: TimeInterval,
-    ) -> Result<GpsTime, String> {
+    fn resolve_time(&self, epoch_time: u32, gnss: Gnss, week: TimeInterval) -> Result<GpsTime> {
         let offsets = self.epoch_week_offsets(epoch_time, gnss)?;
         if !week.is_zero() {
             return resolve_week(&offsets, week);
@@ -460,32 +458,40 @@ impl<S: Sink> Converter<S> {
         if let Some(prev) = prev {
             return Ok(resolve_continuity(&offsets, prev));
         }
-        Err("RTCM MSM7 epoch needs a week constraint".to_string())
+        Err(Error::Rtcm(
+            "RTCM MSM7 epoch needs a week constraint".to_string(),
+        ))
     }
 
-    fn epoch_week_offsets(&self, epoch_time: u32, gnss: Gnss) -> Result<Vec<i64>, String> {
+    fn epoch_week_offsets(&self, epoch_time: u32, gnss: Gnss) -> Result<Vec<i64>> {
         match gnss {
             Gnss::Glonass => self.glonass_epoch_week_offsets(epoch_time),
             Gnss::Beidou => {
                 if epoch_time as i64 >= WEEK_MS {
-                    return Err(format!("invalid RTCM MSM7 epoch time {}", epoch_time));
+                    return Err(Error::Rtcm(format!(
+                        "invalid RTCM MSM7 epoch time {}",
+                        epoch_time
+                    )));
                 }
                 Ok(vec![epoch_time as i64 + BDT_OFFSET_MS])
             }
             _ => {
                 if epoch_time as i64 >= WEEK_MS {
-                    return Err(format!("invalid RTCM MSM7 epoch time {}", epoch_time));
+                    return Err(Error::Rtcm(format!(
+                        "invalid RTCM MSM7 epoch time {}",
+                        epoch_time
+                    )));
                 }
                 Ok(vec![epoch_time as i64])
             }
         }
     }
 
-    fn glonass_epoch_week_offsets(&self, epoch: u32) -> Result<Vec<i64>, String> {
+    fn glonass_epoch_week_offsets(&self, epoch: u32) -> Result<Vec<i64>> {
         let day = (epoch >> 27) as i64;
         let tod = (epoch & ((1 << 27) - 1)) as i64;
         if tod >= DAY_MS {
-            return Err(format!("invalid GLONASS time of day {}", tod));
+            return Err(Error::Rtcm(format!("invalid GLONASS time of day {}", tod)));
         }
         if day != 7 {
             return Ok(vec![
@@ -650,7 +656,7 @@ fn floor_div(n: i64, d: i64) -> i64 {
     }
 }
 
-fn resolve_week(offsets: &[i64], week: TimeInterval) -> Result<GpsTime, String> {
+fn resolve_week(offsets: &[i64], week: TimeInterval) -> Result<GpsTime> {
     let end_ns = week.start_ns + week.dur_ns;
     let start_ms = floor_div(week.start_ns, 1_000_000);
     let mut matched = GpsTime(0);
@@ -672,9 +678,13 @@ fn resolve_week(offsets: &[i64], week: TimeInterval) -> Result<GpsTime, String> 
         }
     }
     match nmatch {
-        0 => Err("no MSM7 epoch matches the week constraint".to_string()),
+        0 => Err(Error::Rtcm(
+            "no MSM7 epoch matches the week constraint".to_string(),
+        )),
         1 => Ok(matched),
-        _ => Err("MSM7 epoch is ambiguous in the week constraint".to_string()),
+        _ => Err(Error::Rtcm(
+            "MSM7 epoch is ambiguous in the week constraint".to_string(),
+        )),
     }
 }
 

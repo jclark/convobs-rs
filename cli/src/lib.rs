@@ -124,7 +124,7 @@ pub fn read_obs_file(
     backend: Option<RinexBackend>,
 ) -> std::result::Result<(Metadata, Vec<SignalObservation>), Error> {
     let br: Box<dyn BufRead> = Box::new(BufReader::new(open_input(path)?));
-    let ctx = |e: String| Error::conversion(input_error(path, &e));
+    let ctx = |e: obsj::Error| Error::conversion(input_error(path, &e.to_string()));
     match format {
         ObsFormat::Obsj => read_obsj(br).map_err(ctx),
         ObsFormat::Rinex => {
@@ -316,7 +316,7 @@ fn parse_args(args: &[String]) -> Result<Option<Config>, String> {
     }
     let interval_ns = (interval * SECOND_NS as f64).round() as i64;
     if interval > 0.0 {
-        validate_decimation_interval(interval_ns)?;
+        validate_decimation_interval(interval_ns).map_err(|e| e.to_string())?;
     }
 
     let inputs: Vec<String> = m
@@ -634,7 +634,7 @@ fn open_writer(path: Option<&str>) -> Result<Box<dyn Write>, String> {
     }
 }
 
-fn build_sink(cfg: &Config, writer: Box<dyn Write>) -> Result<Box<dyn Sink>, String> {
+fn build_sink(cfg: &Config, writer: Box<dyn Write>) -> Result<Box<dyn Sink>, Error> {
     let bw: Box<dyn Write> = Box::new(BufWriter::with_capacity(256 * 1024, writer));
     let mut sink: Box<dyn Sink> = match cfg.to {
         OutputFormat::Rinex => rinex_sink(cfg.rinex_backend.unwrap_or(RinexBackend::Diy), bw)?,
@@ -709,7 +709,7 @@ fn convert_observation_inputs(cfg: &Config) -> Result<(), Error> {
     let mut sink = build_sink(cfg, writer)?;
     for path in &cfg.inputs {
         let br: Box<dyn BufRead> = Box::new(BufReader::new(open_input(path)?));
-        let ctx = |e: String| Error::conversion(input_error(path, &e));
+        let ctx = |e: obsj::Error| Error::conversion(input_error(path, &e.to_string()));
         match cfg.from {
             InputFormat::Rinex => {
                 // RINEX parsing is whole-file; stream its observations onward.
@@ -1015,8 +1015,8 @@ impl PacketDriver {
         match &mut self.family {
             Family::Pending(Some(s)) => s.metadata(m).map_err(|e| e.to_string()),
             Family::Pending(None) => Ok(()),
-            Family::Rtcm(c) => c.sink_metadata(m),
-            Family::Ubx(c) => c.sink_metadata(m),
+            Family::Rtcm(c) => c.sink_metadata(m).map_err(|e| e.to_string()),
+            Family::Ubx(c) => c.sink_metadata(m).map_err(|e| e.to_string()),
         }
     }
 
@@ -1024,8 +1024,8 @@ impl PacketDriver {
         match &mut self.family {
             Family::Pending(Some(s)) => s.flush().map_err(|e| e.to_string()),
             Family::Pending(None) => Ok(()),
-            Family::Rtcm(c) => c.flush(),
-            Family::Ubx(c) => c.flush(),
+            Family::Rtcm(c) => c.flush().map_err(|e| e.to_string()),
+            Family::Ubx(c) => c.flush().map_err(|e| e.to_string()),
         }
     }
 
@@ -1135,7 +1135,7 @@ impl PacketDriver {
         };
         match kind {
             Some(FamilyKind::Ubx) => match self.use_ubx() {
-                Some(c) => Ok(c.convert_chunk(&data)?),
+                Some(c) => c.convert_chunk(&data).map_err(|e| e.to_string()),
                 None => Ok(0),
             },
             Some(FamilyKind::Rtcm) => self.convert_rtcm_stream(&data, wc),
@@ -1164,7 +1164,7 @@ impl PacketDriver {
                 if wrap {
                     format!("{}{}", wc.errf, e)
                 } else {
-                    e
+                    e.to_string()
                 }
             })?;
             if is7 {
@@ -1200,7 +1200,7 @@ impl PacketDriver {
                 // RXM-RAWX, so skip those without a full decode.
                 if ubx::is_rawx_frame(payload) => {
                     if let Some(c) = self.use_ubx() {
-                        if c.convert_chunk(payload)? > 0 {
+                        if c.convert_chunk(payload).map_err(|e| e.to_string())? > 0 {
                             produced = true;
                         }
                     }

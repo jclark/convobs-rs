@@ -13,6 +13,7 @@
 //! is dropped on write and is what `diffobs --ignore-blank-phase` covers.
 
 use obsj::arc::{ArcToLl, LossOfLockSink};
+use obsj::error::Error;
 use obsj::obs::*;
 use obsj::sink::Sink;
 use rinex::observation::{EpochFlag, LliFlags, ObsKey, SignalObservation as XSig};
@@ -28,13 +29,13 @@ use std::str::FromStr;
 /// extension trait over public `rinex` APIs so it is upstreamable as-is.
 pub trait RinexObsj {
     /// Builds a RINEX observation record from obsj metadata and observations.
-    fn from_obsj(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, String>;
+    fn from_obsj(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Error>;
     /// Extracts the obsj model (metadata + observations) from this record.
     fn to_obsj(&self) -> (Metadata, Vec<SignalObservation>);
 }
 
 impl RinexObsj for Rinex {
-    fn from_obsj(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, String> {
+    fn from_obsj(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Error> {
         build_rinex(meta, obs)
     }
 
@@ -122,9 +123,9 @@ fn observable(typ: u8, sig: SigId) -> Observable {
     Observable::from_str(std::str::from_utf8(&code).unwrap()).expect("valid observation code")
 }
 
-fn build_rinex(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, String> {
+fn build_rinex(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Error> {
     if obs.is_empty() {
-        return Err("no observations".to_string());
+        return Err(Error::Rinex("no observations".to_string()));
     }
 
     let mut sorted = obs.to_vec();
@@ -141,8 +142,8 @@ fn build_rinex(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Stri
     let mut glo_channels: HashMap<SV, i8> = HashMap::new();
 
     for o in &sorted {
-        let sv =
-            SV::from_str(o.sat.as_str()).map_err(|_| format!("invalid satellite {}", o.sat))?;
+        let sv = SV::from_str(o.sat.as_str())
+            .map_err(|_| Error::Rinex(format!("invalid satellite {}", o.sat)))?;
         let constellation = sv.constellation;
         let changed = arc.lli(
             SignalKey {
@@ -310,9 +311,9 @@ fn build_antenna(meta: &Metadata) -> Option<rinex::hardware::Antenna> {
 
 /// Reads a RINEX observation file into the obsj model (convenience over
 /// [`Rinex::parse`] + [`RinexObsj::to_obsj`]).
-pub fn read_observation_file<R: Read>(r: R) -> Result<(Metadata, Vec<SignalObservation>), String> {
+pub fn read_observation_file<R: Read>(r: R) -> Result<(Metadata, Vec<SignalObservation>), Error> {
     let mut reader = BufReader::new(r);
-    let rinex = Rinex::parse(&mut reader).map_err(|e| e.to_string())?;
+    let rinex = Rinex::parse(&mut reader).map_err(|e| Error::Rinex(e.to_string()))?;
     Ok(rinex.to_obsj())
 }
 

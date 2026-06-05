@@ -533,8 +533,16 @@ struct ObsHeader {
     time_system: String,
 }
 
-/// Reads a RINEX observation file.
+/// Reads a RINEX observation file into the obsj model.
 pub fn read_observation_file(
+    r: impl BufRead,
+) -> Result<(Metadata, Vec<SignalObservation>), crate::error::Error> {
+    read_observation_file_impl(r).map_err(crate::error::Error::Rinex)
+}
+
+/// The reader proper; its many fixed-column parse checks use plain `String`
+/// messages, folded into [`crate::error::Error::Rinex`] at the public boundary.
+fn read_observation_file_impl(
     r: impl BufRead,
 ) -> Result<(Metadata, Vec<SignalObservation>), String> {
     let mut lines = LineReader::new(r);

@@ -66,4 +66,12 @@ impl From<String> for Error {
     }
 }
 
+/// A library (`obsj`/`rinex-obsj`) error folds into [`Error::Conversion`] at the
+/// CLI boundary (where output is a single rendered line).
+impl From<obsj::Error> for Error {
+    fn from(e: obsj::Error) -> Error {
+        Error::Conversion(e.to_string())
+    }
+}
+
 pub type Result<T> = std::result::Result<T, Error>;

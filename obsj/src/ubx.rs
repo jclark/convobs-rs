@@ -10,6 +10,7 @@
 //!
 //! [`LossOfLockSink`]: crate::arc::LossOfLockSink
 
+use crate::error::Result;
 use crate::obs::*;
 use crate::sink::Sink;
 use rustc_hash::FxHashMap;
@@ -86,18 +87,20 @@ impl<S: Sink> Converter<S> {
         }
     }
 
-    pub fn sink_metadata(&mut self, m: &Metadata) -> Result<(), String> {
-        self.sink.metadata(m).map_err(|e| e.to_string())
+    pub fn sink_metadata(&mut self, m: &Metadata) -> Result<()> {
+        self.sink.metadata(m)?;
+        Ok(())
     }
 
-    pub fn flush(&mut self) -> Result<(), String> {
-        self.sink.flush().map_err(|e| e.to_string())
+    pub fn flush(&mut self) -> Result<()> {
+        self.sink.flush()?;
+        Ok(())
     }
 
     /// Feeds a byte chunk to the UBX framer and converts every RXM-RAWX message
     /// it yields. Returns the number of RXM-RAWX messages converted. The parser
     /// buffers across calls, so a frame split between chunks still parses.
-    pub fn convert_chunk(&mut self, data: &[u8]) -> Result<u64, String> {
+    pub fn convert_chunk(&mut self, data: &[u8]) -> Result<u64> {
         // Collect owned measurements first: the parser iterator borrows `self`,
         // so the converter state can only be touched once the iteration ends.
         let mut batch: Vec<Rawx> = Vec::new();
@@ -136,11 +139,11 @@ impl<S: Sink> Converter<S> {
         Ok(count)
     }
 
-    fn convert_rawx(&mut self, m: &Rawx) -> Result<(), String> {
+    fn convert_rawx(&mut self, m: &Rawx) -> Result<()> {
         let t = GpsTime::from_gps_week_seconds(m.week as i64, m.rcv_tow);
         for meas in &m.meas {
             if let Some(obs) = self.observation(t, meas) {
-                self.sink.observation(&obs).map_err(|e| e.to_string())?;
+                self.sink.observation(&obs)?;
             }
         }
         Ok(())

@@ -758,6 +758,30 @@ pub fn first_frame_pos(data: &[u8]) -> Option<usize> {
     frame.map(|m| consumed - m.frame_len())
 }
 
+/// Byte offset of the first CRC-valid RTCM MSM7 frame. Used for raw-stream
+/// family detection: only an observation frame may select the RTCM family, so
+/// non-observation RTCM (station coords, GLONASS biases, …) that precedes UBX
+/// observations does not steal the stream. Mirrors SatPulse, which commits the
+/// RTCM family only on an MSM7 packet.
+pub fn first_msm7_frame_pos(data: &[u8]) -> Option<usize> {
+    let mut pos = 0;
+    while pos < data.len() {
+        let (consumed, frame) = next_msg_frame(&data[pos..]);
+        match frame {
+            Some(mf) => {
+                let len = mf.frame_len();
+                let start = pos + consumed - len;
+                if is_msm7_frame(&data[start..start + len]) {
+                    return Some(start);
+                }
+                pos += consumed;
+            }
+            None => return None,
+        }
+    }
+    None
+}
+
 /// The 12-bit RTCM message number from a frame header.
 pub fn extract_msg_type(frame: &[u8]) -> u16 {
     if frame.len() <= 5 {

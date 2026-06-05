@@ -269,6 +269,21 @@ fn checksum(data: &[u8]) -> (u8, u8) {
 /// Byte offset of the first checksum-valid UBX frame, for raw-stream family
 /// detection. `None` if the buffer holds no complete valid frame.
 pub fn first_frame_pos(data: &[u8]) -> Option<usize> {
+    first_frame_pos_where(data, |_| true)
+}
+
+/// Byte offset of the first checksum-valid UBX RXM-RAWX frame. Used for
+/// raw-stream family detection: only an observation frame may select the UBX
+/// family, so non-observation UBX (NAV, CFG, …) that precedes RTCM observations
+/// does not steal the stream. Mirrors SatPulse's `isRawObs` gate.
+pub fn first_rawx_frame_pos(data: &[u8]) -> Option<usize> {
+    first_frame_pos_where(data, is_rawx_frame)
+}
+
+/// Byte offset of the first checksum-valid UBX frame satisfying `accept`, which
+/// receives the framed slice (sync word through checksum). `None` if no such
+/// complete valid frame exists.
+fn first_frame_pos_where(data: &[u8], accept: impl Fn(&[u8]) -> bool) -> Option<usize> {
     let mut i = 0;
     while i + 8 <= data.len() {
         if data[i] == 0xB5 && data[i + 1] == 0x62 {
@@ -277,7 +292,13 @@ pub fn first_frame_pos(data: &[u8]) -> Option<usize> {
             if end <= data.len() {
                 let (a, b) = checksum(&data[i + 2..i + 6 + len]);
                 if a == data[end - 2] && b == data[end - 1] {
-                    return Some(i);
+                    if accept(&data[i..end]) {
+                        return Some(i);
+                    }
+                    // Valid frame, but not one we want: skip past it rather than
+                    // resyncing byte-by-byte through its payload.
+                    i = end;
+                    continue;
                 }
             }
         }
@@ -581,5 +602,30 @@ mod tests {
         assert!(!is_rawx_frame(&[0xB5, 0x62, 0x02, 0x14])); // wrong id
         assert!(!is_rawx_frame(&[0xB5, 0x62, 0x01, 0x15])); // wrong class
         assert!(!is_rawx_frame(&[0xB5, 0x62])); // too short
+    }
+
+    /// A complete, checksum-valid UBX frame for the given class/id, empty payload.
+    fn ubx_frame(class: u8, id: u8) -> Vec<u8> {
+        let body = [class, id, 0, 0];
+        let (a, b) = checksum(&body);
+        let mut f = vec![0xB5, 0x62];
+        f.extend_from_slice(&body);
+        f.extend_from_slice(&[a, b]);
+        f
+    }
+
+    #[test]
+    fn first_rawx_frame_pos_skips_non_observation_ubx() {
+        let nav = ubx_frame(0x01, 0x07); // NAV-PVT — not an observation
+        let rawx = ubx_frame(0x02, 0x15); // RXM-RAWX
+        let mut stream = nav.clone();
+        stream.extend_from_slice(&rawx);
+
+        // Any valid frame is the NAV at offset 0...
+        assert_eq!(first_frame_pos(&stream), Some(0));
+        // ...but only the RAWX, after the NAV, selects the UBX family.
+        assert_eq!(first_rawx_frame_pos(&stream), Some(nav.len()));
+        // A buffer of only non-observation UBX yields no observation frame.
+        assert_eq!(first_rawx_frame_pos(&nav), None);
     }
 }

@@ -240,11 +240,6 @@ fn build_command() -> clap::Command {
                 .long("ubx-bds-geo-half-cycle")
                 .action(ArgAction::SetTrue),
         )
-        .arg(
-            Arg::new("unc-omit-do-without-cp")
-                .long("unc-omit-do-without-cp")
-                .action(ArgAction::SetTrue),
-        )
         .arg(Arg::new("inputs").action(ArgAction::Append).num_args(0..))
 }
 
@@ -264,7 +259,6 @@ fn parse_args(args: &[String], now: Instant) -> Result<Option<Config>, String> {
         "rtcm" => InputFormat::Rtcm,
         "rinex" => InputFormat::Rinex,
         "obsj" => InputFormat::ObsJson,
-        "uncb" | "unca" => return Err("Unicore input is not supported in this build".to_string()),
         other => return Err(format!("unsupported input format {:?}", other)),
     };
     let to = match m.get_one::<String>("to").unwrap().to_lowercase().as_str() {
@@ -323,11 +317,6 @@ fn parse_args(args: &[String], now: Instant) -> Result<Option<Config>, String> {
     }
     if changed("ubx-slip-threshold") && !from.may_use_ubx() {
         return Err("--ubx-slip-threshold is valid only with raw or UBX input".to_string());
-    }
-    if m.get_flag("unc-omit-do-without-cp") && !matches!(from, InputFormat::Raw) {
-        return Err(
-            "--unc-omit-do-without-cp is valid only with raw, UNCB, or UNCA input".to_string(),
-        );
     }
     if changed("ubx-bds-geo-half-cycle") && !from.may_use_ubx() {
         return Err("--ubx-bds-geo-half-cycle is valid only with raw or UBX input".to_string());
@@ -400,17 +389,35 @@ fn parse_args(args: &[String], now: Instant) -> Result<Option<Config>, String> {
     }))
 }
 
-const USAGE: &str = "usage: convobs [options] input...\n\
-  -o, --output PATH        output observation file (default stdout)\n\
-  -r, --from FORMAT        raw|ubx|rtcm|rinex|obsj (default raw)\n\
-      --packet-log         input is a JSONL packet log\n\
-      --to FORMAT          rinex|obsj (default rinex)\n\
-      --date YYYYMMDD      RTCM observation civil date\n\
-      --recent             infer RTCM observations within the last week\n\
-  -f, --date-from-filename infer RTCM date from input filename\n\
-      --interval SECONDS   observation decimation interval\n\
-  -p, --ppp-ar             produce output optimized for PPP-AR\n\
-  -H, --header-file PATH   TOML RINEX header metadata file\n";
+// A real-newline literal (not `\n\` continuation): the latter would strip the
+// leading indentation of each line, collapsing the option column to the margin.
+const USAGE: &str = "usage: convobs [options] input...
+  -o, --output PATH         output observation file (default stdout)
+  -r, --from FORMAT         raw|ubx|rtcm|rinex|obsj (default raw)
+      --packet-log          input is a JSONL packet log
+      --to FORMAT           rinex|obsj (default rinex)
+      --date YYYYMMDD       RTCM observation civil date
+      --recent              infer RTCM observations within the last week
+  -f, --date-from-filename  infer RTCM date from input filename
+      --interval SECONDS    observation decimation interval
+  -p, --ppp-ar              produce output optimized for PPP-AR
+  -H, --header-file PATH    TOML RINEX header metadata file
+      --rinex-backend NAME  RINEX reader: auto|diy|crate (default auto)
+
+metadata (RINEX header fields):
+      --rinex-version VER   output RINEX version (default 3.04)
+      --program NAME        PGM field (default convobs)
+      --run-by NAME         RUN BY field (default $USER)
+      --antenna TYPE        ANT # / TYPE field
+      --approx-pos X,Y,Z    APPROX POSITION XYZ, metres
+      --comment TEXT        add a COMMENT line (repeatable)
+
+format-specific:
+      --rtcm-strict-prr         use the RTCM-spec phase-range-rate sign
+      --rtcm-omit-zero-do       omit zero Doppler observations (RTCM)
+      --ubx-slip-threshold N    cycle-slip phase-std threshold (default 15)
+      --ubx-bds-geo-half-cycle  half-cycle align BDS GEO satellites (UBX)
+";
 
 fn parse_yyyymmdd(s: &str) -> Result<Instant, String> {
     if s.len() != 8 {
@@ -799,9 +806,16 @@ fn convert_packet_inputs<'a>(
         } else {
             let modtime = file_modtime(path);
             let wc = file_week_constraint(cfg, path, modtime, now)?;
-            driver
+            let (c, rtcm_used) = driver
                 .convert_packet_stream(r, &wc)
-                .map_err(|e| input_error(path, &e))?
+                .map_err(|e| input_error(path, &e))?;
+            // When the RTCM week was inferred (no --date/--recent/-f) and the
+            // inference actually resolved observations, say so — matching the
+            // SatPulse diagnostic. Uniform with the error style: `convobs: …`.
+            if cfg.week_mode == WeekMode::Auto && rtcm_used && c > 0 {
+                eprintln!("convobs: {}", input_error(path, RECENT_WEEK_WARNING));
+            }
+            c
         };
         total += c;
     }
@@ -816,10 +830,7 @@ fn no_observation_msg(from: InputFormat) -> String {
     match from {
         InputFormat::Ubx => "no UBX-RXM-RAWX messages found".to_string(),
         InputFormat::Rtcm => "no RTCM MSM7 messages found".to_string(),
-        InputFormat::Raw => {
-            "no raw observation packets found (UBX RAWX, RTCM MSM7, UNCB OBSVM, UNCA OBSVMA)"
-                .to_string()
-        }
+        InputFormat::Raw => "no raw observation packets found (UBX RAWX, RTCM MSM7)".to_string(),
         _ => "no observations found".to_string(),
     }
 }
@@ -863,6 +874,12 @@ fn file_week_constraint(
     }
     Ok(wc)
 }
+
+/// Emitted (once per input) when an undated RTCM stream is converted in the
+/// default automatic week mode, where the epoch's GPS week is inferred to be the
+/// most recent one. Mirrors SatPulse's warning wording.
+const RECENT_WEEK_WARNING: &str =
+    "assuming undated RTCM input contains observations from the last week";
 
 fn recent_week_constraint(now: Instant) -> WeekConstraint {
     let start = Instant {
@@ -1151,30 +1168,35 @@ impl<'a> PacketDriver<'a> {
         Ok(count)
     }
 
+    /// Converts a packet stream, returning the observation count and whether the
+    /// stream resolved to the RTCM family (so the caller can decide whether the
+    /// inferred-week warning is warranted).
     fn convert_packet_stream(
         &mut self,
         r: Box<dyn Read>,
         wc: &WeekConstraint,
-    ) -> Result<u64, String> {
+    ) -> Result<(u64, bool), String> {
         let mut data = Vec::new();
         BufReader::new(r)
             .read_to_end(&mut data)
             .map_err(|e| e.to_string())?;
-        // `raw` picks a single family from whichever valid frame comes first.
+        // `raw` picks a single family from whichever observation frame comes first.
         let kind = match self.from {
             InputFormat::Ubx => Some(FamilyKind::Ubx),
             InputFormat::Rtcm => Some(FamilyKind::Rtcm),
             InputFormat::Raw => detect_raw_family(&data),
             _ => None,
         };
-        match kind {
+        let rtcm_used = matches!(kind, Some(FamilyKind::Rtcm));
+        let count = match kind {
             Some(FamilyKind::Ubx) => match self.use_ubx() {
-                Some(c) => c.convert_chunk(&data).map_err(|e| e.to_string()),
-                None => Ok(0),
+                Some(c) => c.convert_chunk(&data).map_err(|e| e.to_string())?,
+                None => 0,
             },
-            Some(FamilyKind::Rtcm) => self.convert_rtcm_stream(&data, wc),
-            None => Ok(0),
-        }
+            Some(FamilyKind::Rtcm) => self.convert_rtcm_stream(&data, wc)?,
+            None => 0,
+        };
+        Ok((count, rtcm_used))
     }
 
     fn convert_rtcm_stream(&mut self, data: &[u8], wc: &WeekConstraint) -> Result<u64, String> {
@@ -1245,9 +1267,16 @@ impl<'a> PacketDriver<'a> {
     }
 }
 
-/// Picks the family for a `raw` stream from whichever valid frame appears first.
+/// Picks the family for a `raw` stream from whichever *observation* frame
+/// appears first — RTCM MSM7 or UBX RXM-RAWX. Non-observation frames (other UBX
+/// messages, non-MSM7 RTCM) never select a family, so an early UBX NAV/CFG frame
+/// ahead of RTCM MSM7 observations no longer mis-selects UBX and drops the data.
+/// This matches SatPulse, which commits a family only on an observation packet.
 fn detect_raw_family(data: &[u8]) -> Option<FamilyKind> {
-    match (rtcm::first_frame_pos(data), ubx::first_frame_pos(data)) {
+    match (
+        rtcm::first_msm7_frame_pos(data),
+        ubx::first_rawx_frame_pos(data),
+    ) {
         (Some(r), Some(u)) => Some(if r <= u {
             FamilyKind::Rtcm
         } else {

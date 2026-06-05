@@ -6,7 +6,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("convobs: {}", e);
-            ExitCode::FAILURE
+            ExitCode::from(e.exit_code())
         }
     }
 }

@@ -34,6 +34,15 @@ impl Error {
             source,
         }
     }
+
+    /// Process exit code. Usage errors exit 2 (the conventional "command line
+    /// was wrong" code, matching the SatPulse CLI); every other failure exits 1.
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            Error::Usage(_) => 2,
+            Error::Io { .. } | Error::Conversion(_) => 1,
+        }
+    }
 }
 
 impl fmt::Display for Error {

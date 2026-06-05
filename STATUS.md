@@ -7,6 +7,16 @@ now the **cargo workspace** the plan describes — `obsj` (the leaf library),
 against the Go oracle (`tmp/oracle/satpulsetool`) and the convbin goldens, with
 our `diffobs`.
 
+`cargo test` is now the hermetic, authoritative gate (no Go checkout, no convbin,
+no `tmp/` at test time): `cli/tests/golden.rs` runs the four committed
+`testdata/` fixtures in-process through `convobs::run_to_writer` and compares
+each against its convbin golden with the library's own `diff_observations` /
+`diff_metadata` (5e-4), covering both the DIY backend and — under
+`--features convobs-cli/rinex-crate` — the crate backend. `obsj` carries
+per-module unit tests for the algorithmic core (week resolution, slip/LLI, the
+diff comparator, decimation, the frequency table, obsj parsing). The `tmp/t/*.sh`
+oracle scripts remain as an extra cross-check against the live Go oracle.
+
 ## Migration: stages 1–8 complete
 
 | stage | result |

@@ -1,0 +1,39 @@
+# Hermetic CI: cargo test and clippy, with no Go checkout and no external tools.
+# The committed testdata/ goldens make the golden test self-contained, so this is
+# the authoritative gate (the tmp/t/*.sh oracle scripts remain an extra,
+# non-hermetic cross-check against the live Go oracle for local runs).
+name: CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: rustup toolchain install stable --component clippy --profile minimal
+
+      # Default features: the self-contained DIY RINEX backend drives the golden
+      # test, plus the obsj library unit tests (feature-unified through the CLI).
+      - name: Test (default — DIY RINEX backend)
+        run: cargo test --workspace
+
+      # The crate RINEX backend (rinex-crate) drives the same goldens, ignoring
+      # blank phase where the crate cannot emit it.
+      - name: Test (crate RINEX backend)
+        run: cargo test --workspace --features convobs-cli/rinex-crate
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Clippy (all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings

@@ -292,3 +292,93 @@ fn split_zone(s: &str) -> Option<(&str, i64)> {
     }
     Some((s, 0))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::obs::{parse_time, SatId, SigId};
+    use std::io::Cursor;
+
+    fn read(line: &str) -> Result<(Metadata, Vec<SignalObservation>)> {
+        read_obsj(Cursor::new(line.as_bytes().to_vec()))
+    }
+
+    #[test]
+    fn rejects_legacy_keys_on_observation_records() {
+        let base = r#"{"t":"2025-06-30T23:59:59.0000000","sat":"G01","sig":"1C","pr":1.0"#;
+        for (key, frag) in [
+            ("ssi", r#","ssi":5}"#),
+            ("lli", r#","lli":1}"#),
+            ("ll", r#","ll":1}"#),
+        ] {
+            let line = format!("{base}{frag}");
+            let err = match read(&line) {
+                Ok(_) => panic!("key {key}: expected rejection"),
+                Err(e) => e.to_string(),
+            };
+            assert!(err.contains(key), "key {key}: error was {err:?}");
+        }
+        // The same keys on a metadata record (no "t") are not observation fields
+        // and are simply ignored, not rejected.
+        assert!(read(r#"{"marker":{"name":"X"},"ll":1}"#).is_ok());
+    }
+
+    #[test]
+    fn dispatches_on_top_level_t() {
+        // A top-level `t` makes it an observation; its absence, a metadata record.
+        let (meta, obs) = read(r#"{"marker":{"name":"BASE"},"leapSeconds":18}"#).unwrap();
+        assert_eq!(meta.marker.name, "BASE");
+        assert_eq!(meta.leap_seconds, Some(18));
+        assert!(obs.is_empty());
+
+        let (_, obs) =
+            read(r#"{"t":"2025-06-30T23:59:59.0000000","sat":"G01","sig":"1C","pr":1.0}"#).unwrap();
+        assert_eq!(obs.len(), 1);
+        assert_eq!(obs[0].sat.as_str(), "G01");
+    }
+
+    #[test]
+    fn observation_record_requires_sat_and_sig() {
+        assert!(read(r#"{"t":"2025-06-30T23:59:59.0000000","sig":"1C","pr":1.0}"#).is_err());
+        assert!(read(r#"{"t":"2025-06-30T23:59:59.0000000","sat":"G01","pr":1.0}"#).is_err());
+    }
+
+    #[test]
+    fn float_fields_round_trip_bit_exactly() {
+        let o = SignalObservation {
+            t: parse_time("2025-06-30T23:59:59.0000000").unwrap(),
+            sat: SatId(*b"G03"),
+            sig: SigId(*b"1C"),
+            v: SignalValues {
+                frq: Some(-4),
+                pr: Some(22187868.655),
+                cp: Some(116598092.035),
+                dop: Some(-1234.5),
+                cn0: Some(48.0),
+                arc: 2,
+                hc: true,
+                bt: false,
+                ll: false,
+            },
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let mut sink = ObsJsonSink::new(&mut buf);
+            sink.observation(&o).unwrap();
+            sink.flush().unwrap();
+        }
+        let (_, back) = read_obsj(Cursor::new(buf)).unwrap();
+        assert_eq!(back.len(), 1);
+        let r = back[0].v;
+        // Every float survives the std correctly-rounded parse exactly.
+        assert_eq!(r.frq, Some(-4));
+        assert_eq!(r.pr, Some(22187868.655));
+        assert_eq!(r.cp, Some(116598092.035));
+        assert_eq!(r.dop, Some(-1234.5));
+        assert_eq!(r.cn0, Some(48.0));
+        assert_eq!(r.arc, 2);
+        assert!(r.hc && !r.bt);
+        // The transient loss-of-lock flag is never on the wire.
+        assert!(!r.ll);
+    }
+}

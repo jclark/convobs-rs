@@ -82,18 +82,38 @@ struct Config {
     meta: Metadata,
 }
 
-/// Entry point. Returns a typed error (without exit handling).
+/// Entry point. Resolves the output writer (`--output`/stdout) and the wall
+/// clock, then runs the conversion. Returns a typed error (without exit
+/// handling).
 pub fn run(args: &[String]) -> Result<(), Error> {
     let cfg = match parse_args(args).map_err(Error::Usage)? {
         Some(c) => c,
         None => return Ok(()), // --help
     };
-    let now = now_instant();
+    let writer = open_writer(cfg.output_path.as_deref())?;
+    execute(&cfg, writer, now_instant())
+}
+
+/// Test/embedding seam: runs a parsed conversion against a caller-supplied
+/// writer and clock — mirrors Go's `convJob{out}.run(now)`. `--output` is
+/// ignored here; the provided writer wins, and `now` is injected for
+/// determinism.
+pub fn run_to_writer(args: &[String], out: Box<dyn Write>, now: Instant) -> Result<(), Error> {
+    let cfg = match parse_args(args).map_err(Error::Usage)? {
+        Some(c) => c,
+        None => return Ok(()), // --help
+    };
+    execute(&cfg, out, now)
+}
+
+/// Dispatches a parsed config to the observation- or packet-input path,
+/// threading the output writer and clock through rather than resolving them
+/// internally — so the same code drives both `run` and `run_to_writer`.
+fn execute(cfg: &Config, writer: Box<dyn Write>, now: Instant) -> Result<(), Error> {
     match cfg.from {
-        InputFormat::Rinex | InputFormat::ObsJson => convert_observation_inputs(&cfg)?,
-        _ => convert_packet_inputs(&cfg, now)?,
+        InputFormat::Rinex | InputFormat::ObsJson => convert_observation_inputs(cfg, writer),
+        _ => convert_packet_inputs(cfg, writer, now),
     }
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -704,8 +724,7 @@ fn now_instant() -> Instant {
 // Observation-file inputs (rinex / obsj)
 // ---------------------------------------------------------------------------
 
-fn convert_observation_inputs(cfg: &Config) -> Result<(), Error> {
-    let writer = open_writer(cfg.output_path.as_deref())?;
+fn convert_observation_inputs(cfg: &Config, writer: Box<dyn Write>) -> Result<(), Error> {
     let mut sink = build_sink(cfg, writer)?;
     for path in &cfg.inputs {
         let br: Box<dyn BufRead> = Box::new(BufReader::new(open_input(path)?));
@@ -742,8 +761,7 @@ struct WeekConstraint {
     err: Option<String>,
 }
 
-fn convert_packet_inputs(cfg: &Config, now: Instant) -> Result<(), Error> {
-    let writer = open_writer(cfg.output_path.as_deref())?;
+fn convert_packet_inputs(cfg: &Config, writer: Box<dyn Write>, now: Instant) -> Result<(), Error> {
     let sink = build_sink(cfg, writer)?;
     // Converters emit a per-observation loss-of-lock flag; the accumulator turns
     // it into `arc`. It sits upstream of decimation so a slip in a dropped gap

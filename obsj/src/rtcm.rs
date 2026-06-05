@@ -770,3 +770,245 @@ pub fn is_msm7_frame(frame: &[u8]) -> bool {
     let mt = extract_msg_type(frame);
     (1071..=1137).contains(&mt) && mt % 10 == 7
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NullSink;
+    impl Sink for NullSink {
+        fn metadata(&mut self, _: &Metadata) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn observation(&mut self, _: &SignalObservation) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn converter() -> Converter<NullSink> {
+        Converter::new(
+            NullSink,
+            Options {
+                use_spec_phase_range_rate_sign: false,
+                omit_zero_do: false,
+            },
+        )
+    }
+
+    fn week_window(t: GpsTime, before_s: i64, dur_s: i64) -> TimeInterval {
+        TimeInterval {
+            start_ns: t.epoch_nanos() - before_s * 1_000_000_000,
+            dur_ns: dur_s * 1_000_000_000,
+        }
+    }
+
+    // ---- epoch -> week-offset candidates ----
+
+    #[test]
+    fn epoch_week_offsets_ranges_and_bds_offset() {
+        let c = converter();
+        // GPS: the epoch time is the offset, verbatim.
+        assert_eq!(
+            c.epoch_week_offsets(345_600_000, Gnss::Gps).unwrap(),
+            vec![345_600_000]
+        );
+        // BeiDou is +14 s from GPS time.
+        assert_eq!(
+            c.epoch_week_offsets(1000, Gnss::Beidou).unwrap(),
+            vec![1000 + BDT_OFFSET_MS]
+        );
+        // Epoch time at or beyond a week is invalid.
+        assert!(c.epoch_week_offsets(WEEK_MS as u32, Gnss::Gps).is_err());
+        assert!(c.epoch_week_offsets(WEEK_MS as u32, Gnss::Beidou).is_err());
+    }
+
+    #[test]
+    fn glonass_epoch_week_offsets_day_and_ambiguity() {
+        let c = converter();
+        let leap = DEFAULT_GPS_UTC_MS;
+        let tod = 4 * HOUR_MS;
+        // day != 7: a single candidate, UTC-shifted and leap-corrected.
+        let epoch = (2u32 << 27) | tod as u32;
+        assert_eq!(
+            c.glonass_epoch_week_offsets(epoch).unwrap(),
+            vec![2 * DAY_MS + tod - GLONASS_UTC_OFFSET_MS + leap]
+        );
+        // day == 7 (unknown): one candidate per day of the week.
+        let epoch7 = (7u32 << 27) | tod as u32;
+        let got = c.glonass_epoch_week_offsets(epoch7).unwrap();
+        let want: Vec<i64> = (0..7)
+            .map(|d| d * DAY_MS + tod - GLONASS_UTC_OFFSET_MS + leap)
+            .collect();
+        assert_eq!(got, want);
+        // time-of-day beyond a day is invalid.
+        assert!(c.glonass_epoch_week_offsets(DAY_MS as u32).is_err());
+    }
+
+    // ---- week resolution against a constraint ----
+
+    #[test]
+    fn resolve_week_single_match() {
+        let t = GpsTime::from_gps_week_millis(2397, 345_600_000);
+        let offsets = vec![345_600_000i64];
+        let got = resolve_week(&offsets, week_window(t, 60, 120)).unwrap();
+        assert_eq!(got.0, t.0);
+    }
+
+    #[test]
+    fn resolve_week_no_match() {
+        // The single candidate (~4 days into the week) lies outside a one-hour
+        // window at the week start.
+        let start = GpsTime::from_gps_week_millis(2397, 0);
+        let offsets = vec![345_600_000i64];
+        assert!(resolve_week(&offsets, week_window(start, 0, 3600)).is_err());
+    }
+
+    #[test]
+    fn resolve_week_ambiguous() {
+        // GLONASS day-7 spreads a candidate across every day; a 48-hour window
+        // catches two of them.
+        let c = converter();
+        let epoch7 = (7u32 << 27) | (4 * HOUR_MS) as u32;
+        let offsets = c.glonass_epoch_week_offsets(epoch7).unwrap();
+        let start = GpsTime::from_gps_week_millis(2397, 0);
+        assert!(resolve_week(&offsets, week_window(start, 0, 48 * 3600)).is_err());
+    }
+
+    // ---- continuity (no constraint) ----
+
+    #[test]
+    fn continuity_candidate_half_week_wrap() {
+        let prev_week = 2397i64;
+        // No wrap when the offset is near the previous epoch.
+        let prev_ms = prev_week * WEEK_MS + 345_600_000;
+        assert_eq!(
+            continuity_candidate(prev_week, 345_600_000, prev_ms).0,
+            prev_ms * RINEX_TICKS_PER_MS
+        );
+        // Previous near week start, offset near week end -> wrap back a week.
+        let prev_ms = prev_week * WEEK_MS + 1000;
+        let got = continuity_candidate(prev_week, WEEK_MS - 1000, prev_ms);
+        assert_eq!(got.0, (prev_week * WEEK_MS - 1000) * RINEX_TICKS_PER_MS);
+        // Previous near week end, offset near week start -> wrap forward a week.
+        let prev_ms = prev_week * WEEK_MS + (WEEK_MS - 1000);
+        let got = continuity_candidate(prev_week, 1000, prev_ms);
+        assert_eq!(got.0, ((prev_week + 1) * WEEK_MS + 1000) * RINEX_TICKS_PER_MS);
+    }
+
+    #[test]
+    fn resolve_continuity_picks_nearest_candidate() {
+        let prev = GpsTime::from_gps_week_millis(2397, 345_600_000);
+        let prev_ms = prev.0 / RINEX_TICKS_PER_MS;
+        // Two candidates: the matching one and one a day off; the nearest wins.
+        let offsets = vec![345_600_000i64, 345_600_000 + DAY_MS];
+        let got = resolve_continuity(&offsets, prev);
+        assert_eq!(got.0, prev_ms * RINEX_TICKS_PER_MS);
+    }
+
+    // ---- satellite numbering ----
+
+    #[test]
+    fn rinex_sat_num_ranges() {
+        assert_eq!(rinex_sat_num(Gnss::Gps, 3), 3);
+        assert_eq!(rinex_sat_num(Gnss::Gps, 64), 0);
+        assert_eq!(rinex_sat_num(Gnss::Gps, 0), 0);
+        // SBAS is offset by +19.
+        assert_eq!(rinex_sat_num(Gnss::Sbas, 20), 39);
+        assert_eq!(rinex_sat_num(Gnss::Sbas, 40), 0);
+        assert_eq!(rinex_sat_num(Gnss::Glonass, 24), 24);
+        assert_eq!(rinex_sat_num(Gnss::Glonass, 25), 0);
+        assert_eq!(rinex_sat_num(Gnss::Galileo, 50), 50);
+        assert_eq!(rinex_sat_num(Gnss::Galileo, 51), 0);
+        assert_eq!(rinex_sat_num(Gnss::Beidou, 63), 63);
+        assert_eq!(rinex_sat_num(Gnss::Qzss, 11), 0);
+        assert_eq!(rinex_sat_num(Gnss::Irnss, 14), 14);
+        assert_eq!(rinex_sat_num(Gnss::Irnss, 15), 0);
+    }
+
+    // ---- cell math ----
+
+    fn sat(range_int: Option<u8>, range_mod: f64, phase_rate: Option<i16>) -> SatData {
+        SatData {
+            satellite_id: 3,
+            range_int,
+            range_mod,
+            phase_rate,
+            glo_channel: None,
+        }
+    }
+
+    #[test]
+    fn range_and_phase_math() {
+        // rough range = (int + mod) ms of light travel.
+        assert_eq!(
+            rough_range(&sat(Some(70), 0.5, Some(100))),
+            Some(70.5 * RANGE_MS)
+        );
+        assert_eq!(rough_range(&sat(None, 0.5, Some(100))), None);
+        // pseudorange adds the fine term (also in ms of light).
+        assert_eq!(pseudorange(Some(100.0), Some(0.0)), Some(100.0));
+        assert_eq!(pseudorange(None, Some(0.0)), None);
+        assert_eq!(pseudorange(Some(100.0), None), None);
+        // carrier phase = range * f / c; no frequency -> none.
+        let freq = 1575.420e6;
+        assert_eq!(
+            carrier_phase(Some(100.0), Some(0.0), Some(freq)),
+            Some(100.0 * freq / SPEED_OF_LIGHT)
+        );
+        assert_eq!(carrier_phase(Some(100.0), Some(0.0), None), None);
+    }
+
+    #[test]
+    fn doppler_f32_narrowing_and_sign() {
+        let freq = 1575.420e6;
+        // prr = rough + fine = 100 + (-0.2) = 99.8; the result is f32-narrowed.
+        let want = ((99.8_f64 * freq / SPEED_OF_LIGHT) as f32) as f64;
+        assert_eq!(doppler(Some(100), Some(-0.2), Some(freq), false), Some(want));
+        // The spec sign flips the polarity before narrowing.
+        let want_neg = ((-99.8_f64 * freq / SPEED_OF_LIGHT) as f32) as f64;
+        assert_eq!(
+            doppler(Some(100), Some(-0.2), Some(freq), true),
+            Some(want_neg)
+        );
+        // Any missing input -> none.
+        assert_eq!(doppler(None, Some(0.0), Some(freq), false), None);
+        assert_eq!(doppler(Some(0), None, Some(freq), false), None);
+        assert_eq!(doppler(Some(0), Some(0.0), None, false), None);
+    }
+
+    #[test]
+    fn cn0_recovers_raw_integer() {
+        // DF408 scales by 2^-4, so 45 dB-Hz is raw 720, recovered exactly in f32.
+        assert_eq!(cn0(Some(45.0)), Some(45.0));
+        assert_eq!(cn0(Some(45.5)), Some(45.5));
+        assert_eq!(cn0(None), None);
+    }
+
+    // ---- frame scanning helpers ----
+
+    fn frame(mt: u16) -> Vec<u8> {
+        vec![
+            0xD3,
+            0,
+            0,
+            (mt >> 4) as u8,
+            ((mt & 0xF) << 4) as u8,
+            0,
+            0,
+        ]
+    }
+
+    #[test]
+    fn msg_type_and_msm7_classification() {
+        assert_eq!(extract_msg_type(&frame(1077)), 1077);
+        assert_eq!(extract_msg_type(&frame(1005)), 1005);
+        assert_eq!(extract_msg_type(&[0xD3, 0, 0]), 0); // too short
+        assert!(is_msm7_frame(&frame(1077)));
+        assert!(is_msm7_frame(&frame(1127)));
+        assert!(!is_msm7_frame(&frame(1076)));
+        assert!(!is_msm7_frame(&frame(1005)));
+    }
+}

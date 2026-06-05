@@ -129,11 +129,14 @@ Repo root: `../satpulse`.
 
 ## Fixtures & oracles
 
-- **Committed small fixtures** (`testdata/`, ≤ ~4 MB):
-  `packet-rtcm-20260519.{rtcm,obs.gz}`, `um980-rtcm-20260527.{rtcm,obs.gz}`,
-  `m8t/f9t-20251217.{ubx,obs.gz}`. Goldens = RTKLIB-EX `convbin`; exact convbin
-  flags in `testdata/Makefile`; SatPulse-side flags + signal whitelist (`C6I`,
-  `C7D`, `C7P`) in `convobs_test.go`.
+- **Committed fixtures** (`cli/testdata/`, ~11 MB):
+  `m8t/f9t-20251217.{ubx,obs.gz}`, `packet-rtcm-20260519.{rtcm,obs.gz}`,
+  `um980-rtcm-20260527.{rtcm,obs.gz}` — four input/golden pairs that back the
+  in-process golden test in `cli/tests/golden.rs` (`cargo test`, no Go and no
+  convbin at test time). Goldens = RTKLIB-EX `convbin`; exact convbin flags in
+  `cli/testdata/Makefile`; convobs-side flags + tolerances in `golden.rs`. (The
+  Unicore `um980-uncb` pair and its `C6I`/`C7D`/`C7P` signal whitelist are out
+  of scope here — convobs-rs has no Unicore input.)
 - **Large fixtures** (`tmp/`, gitignored): maasdam/serpa/x20p/ttyAMA0 packet logs
   + `.obs.gz`/`.obsj`, `packet-rtcm-20260519-3h` — big-scale validation and the
   `--interval 30` perf gate, exercised both as packet logs and as

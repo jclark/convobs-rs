@@ -14,6 +14,10 @@ thiserror = { workspace = true }
 rtcm-rs = { workspace = true, optional = true }
 ublox = { workspace = true, optional = true }
 
+[[example]]
+name = "rinex_roundtrip"
+required-features = ["rinexobs"]
+
 [features]
 default = []
 # Self-contained fixed-column RINEX observation reader/writer with an optional

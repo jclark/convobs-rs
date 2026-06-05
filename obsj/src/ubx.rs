@@ -381,3 +381,205 @@ fn rinex_sig(gnss_id: u8, sig_id: u8) -> Option<[u8; 2]> {
     };
     Some(*s)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct NullSink;
+    impl Sink for NullSink {
+        fn metadata(&mut self, _: &Metadata) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn observation(&mut self, _: &SignalObservation) -> std::io::Result<()> {
+            Ok(())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn converter(opts: Options) -> Converter<NullSink> {
+        Converter::new(NullSink, opts)
+    }
+
+    fn opts() -> Options {
+        Options {
+            slip_threshold: 15,
+            bds_geo_half_cycle: false,
+        }
+    }
+
+    fn base_meas() -> Meas {
+        Meas {
+            pr_mes: 23_956_830.530,
+            cp_mes: 125_893_980.172,
+            do_mes: 0.0,
+            gnss_id: GPS,
+            sv_id: 1,
+            sig_id: 0,
+            freq_id: 0,
+            lock_time: 100,
+            cno: 0,
+            cp_stdev: 0,
+            trk_stat: PR_VALID | CP_VALID | HALF_CYC,
+        }
+    }
+
+    fn key() -> (SatId, SigId) {
+        (SatId::format(b'G', 1), SigId(*b"1C"))
+    }
+
+    // ---- mapping tables ----
+
+    #[test]
+    fn rinex_sys_table() {
+        assert_eq!(rinex_sys(GPS), Some(b'G'));
+        assert_eq!(rinex_sys(GLO), Some(b'R'));
+        assert_eq!(rinex_sys(BDS), Some(b'C'));
+        assert_eq!(rinex_sys(NAVIC), Some(b'I'));
+        assert_eq!(rinex_sys(99), None);
+    }
+
+    #[test]
+    fn rinex_sat_num_table() {
+        // SBAS PRNs >= 120 collapse to two digits.
+        assert_eq!(rinex_sat_num(SBAS, 120), 20);
+        assert_eq!(rinex_sat_num(SBAS, 100), 100);
+        // GLONASS 255 is "unknown".
+        assert_eq!(rinex_sat_num(GLO, 255), 0);
+        assert_eq!(rinex_sat_num(GLO, 5), 5);
+        assert_eq!(rinex_sat_num(GPS, 3), 3);
+    }
+
+    #[test]
+    fn rinex_sig_table() {
+        assert_eq!(rinex_sig(GPS, 0), Some(*b"1C"));
+        assert_eq!(rinex_sig(GPS, 3), Some(*b"2L"));
+        assert_eq!(rinex_sig(GPS, 99), None);
+        assert_eq!(rinex_sig(GAL, 5), Some(*b"7I"));
+        assert_eq!(rinex_sig(BDS, 0), Some(*b"2I"));
+        assert_eq!(rinex_sig(BDS, 7), Some(*b"5P"));
+        assert_eq!(rinex_sig(BDS, 8), Some(*b"5D"));
+        assert_eq!(rinex_sig(BDS, 9), None); // gap in the BDS table
+        assert_eq!(rinex_sig(GLO, 2), Some(*b"2C"));
+        assert_eq!(rinex_sig(99, 0), None);
+    }
+
+    // ---- slip / loss-of-lock ----
+
+    #[test]
+    fn slip_unset_for_steady_valid_phase() {
+        let mut c = converter(opts());
+        let (sat, sig) = key();
+        let (ll, hc) = c.slip_hc(sat, sig, &base_meas(), true);
+        assert!(!ll && !hc);
+    }
+
+    #[test]
+    fn slip_set_on_zero_lock() {
+        let mut c = converter(opts());
+        let (sat, sig) = key();
+        let mut m = base_meas();
+        m.lock_time = 0;
+        let (ll, hc) = c.slip_hc(sat, sig, &m, true);
+        assert!(ll && !hc);
+    }
+
+    #[test]
+    fn slip_deferred_without_phase() {
+        // No carrier phase this epoch: the slip is pending, not yet emitted.
+        let mut c = converter(opts());
+        let (sat, sig) = key();
+        let mut m = base_meas();
+        m.lock_time = 0;
+        m.trk_stat = PR_VALID; // no CP_VALID
+        let (ll, hc) = c.slip_hc(sat, sig, &m, false);
+        assert!(!ll && !hc);
+    }
+
+    #[test]
+    fn slip_on_lock_time_decrease() {
+        let mut c = converter(opts());
+        let (sat, sig) = key();
+        let mut m = base_meas();
+        m.lock_time = 100;
+        assert_eq!(c.slip_hc(sat, sig, &m, true), (false, false));
+        m.lock_time = 50; // lock counter went backwards
+        assert!(c.slip_hc(sat, sig, &m, true).0);
+    }
+
+    #[test]
+    fn slip_on_sub_half_cycle_change() {
+        let mut c = converter(opts());
+        let (sat, sig) = key();
+        let m = base_meas();
+        assert_eq!(c.slip_hc(sat, sig, &m, true), (false, false));
+        let mut m2 = base_meas();
+        m2.trk_stat |= SUB_HALF_CYC; // sub-half-cycle toggled
+        assert!(c.slip_hc(sat, sig, &m2, true).0);
+    }
+
+    #[test]
+    fn slip_on_cp_stdev_threshold() {
+        let (sat, sig) = key();
+        // At/over threshold -> slip; below -> none.
+        let mut c = converter(opts());
+        let mut m = base_meas();
+        m.cp_stdev = 15;
+        assert!(c.slip_hc(sat, sig, &m, true).0);
+
+        let mut c = converter(opts());
+        let mut m = base_meas();
+        m.cp_stdev = 14;
+        assert!(!c.slip_hc(sat, sig, &m, true).0);
+    }
+
+    #[test]
+    fn half_cycle_unresolved_rules() {
+        let mut m = base_meas();
+        // Non-SBAS: unresolved iff the HALF_CYC bit is clear.
+        m.trk_stat = PR_VALID | CP_VALID; // HALF_CYC clear
+        assert!(half_cycle_unresolved(&m));
+        m.trk_stat |= HALF_CYC;
+        assert!(!half_cycle_unresolved(&m));
+        // SBAS: unresolved while lock time is short (<= 8000).
+        let mut s = base_meas();
+        s.gnss_id = SBAS;
+        s.lock_time = 8000;
+        assert!(half_cycle_unresolved(&s));
+        s.lock_time = 8001;
+        assert!(!half_cycle_unresolved(&s));
+    }
+
+    // ---- carrier phase / BDS GEO half-cycle ----
+
+    #[test]
+    fn bds_geo_half_cycle_option() {
+        let bds = |sv| Meas {
+            cp_mes: 100.25,
+            gnss_id: BDS,
+            sv_id: sv,
+            trk_stat: CP_VALID | HALF_CYC,
+            ..base_meas()
+        };
+        // Default: GEO phase unchanged.
+        assert_eq!(carrier_phase(&bds(2), false), Some(100.25));
+        // Enabled: a BDS GEO (svid <= 5) gets a half-cycle added.
+        assert_eq!(carrier_phase(&bds(2), true), Some(100.75));
+        // Enabled: a non-GEO BDS satellite is unchanged.
+        assert_eq!(carrier_phase(&bds(6), true), Some(100.25));
+        // No CP_VALID -> no phase.
+        let mut no_cp = bds(2);
+        no_cp.trk_stat = PR_VALID;
+        assert_eq!(carrier_phase(&no_cp, true), None);
+    }
+
+    #[test]
+    fn rawx_frame_recognition() {
+        assert!(is_rawx_frame(&[0xB5, 0x62, 0x02, 0x15]));
+        assert!(!is_rawx_frame(&[0xB5, 0x62, 0x02, 0x14])); // wrong id
+        assert!(!is_rawx_frame(&[0xB5, 0x62, 0x01, 0x15])); // wrong class
+        assert!(!is_rawx_frame(&[0xB5, 0x62])); // too short
+    }
+}

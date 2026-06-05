@@ -434,11 +434,16 @@ fn date_instant(year: i64, month: u32, day: u32) -> Instant {
 }
 
 fn valid_date(year: i64, month: u32, day: u32) -> bool {
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
-        return false;
+    Civil {
+        year,
+        month,
+        day,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        nanos: 0,
     }
-    let c = date_instant(year, month, day).civil();
-    c.year == year && c.month == month && c.day == day
+    .is_valid()
 }
 
 // ---------------------------------------------------------------------------

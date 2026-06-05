@@ -262,7 +262,7 @@ pub fn parse_rfc3339_public(s: &str) -> Option<Instant> {
         padded.parse().ok()?
     };
 
-    let mut inst = Instant::from_civil(crate::obs::Civil {
+    let c = crate::obs::Civil {
         year,
         month,
         day,
@@ -270,7 +270,11 @@ pub fn parse_rfc3339_public(s: &str) -> Option<Instant> {
         minute,
         second,
         nanos,
-    });
+    };
+    if !c.is_valid() {
+        return None;
+    }
+    let mut inst = Instant::from_civil(c);
     inst.secs -= off_secs;
     Some(inst)
 }

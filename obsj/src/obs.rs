@@ -82,6 +82,31 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146097 + doe - 719468
 }
 
+impl Civil {
+    /// True if these fields name a real calendar date and time of day.
+    ///
+    /// [`GpsTime::from_civil`] is total: it feeds the fields straight into the
+    /// day-count arithmetic, so an out-of-range day silently normalizes to a
+    /// different valid date (e.g. Feb 30 -> Mar 2). Parsers that build a
+    /// `Civil` from untrusted input should reject it here first. A leap second
+    /// (`second == 60`) is permitted.
+    pub fn is_valid(self) -> bool {
+        if !(1..=12).contains(&self.month)
+            || self.day < 1
+            || self.hour > 23
+            || self.minute > 59
+            || self.second > 60
+            || self.nanos >= 1_000_000_000
+        {
+            return false;
+        }
+        // Round-trip the date: a day past the month's length normalizes to a
+        // different (year, month, day) on the way back.
+        let (year, month, day) = civil_from_days(days_from_civil(self.year, self.month, self.day));
+        (year, month, day) == (self.year, self.month, self.day)
+    }
+}
+
 impl GpsTime {
     /// Converts ticks to a civil UTC-labelled time, with no leap adjustment.
     pub fn civil(self) -> Civil {
@@ -168,15 +193,7 @@ pub fn parse_time(s: &str) -> Result<GpsTime, crate::error::Error> {
     let minute: u32 = t[1].parse().map_err(|_| err())?;
     let second: u32 = t[2].parse().map_err(|_| err())?;
     let frac7: u32 = frac.parse().map_err(|_| err())?;
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 60
-    {
-        return Err(err());
-    }
-    Ok(GpsTime::from_civil(Civil {
+    let c = Civil {
         year,
         month,
         day,
@@ -184,7 +201,11 @@ pub fn parse_time(s: &str) -> Result<GpsTime, crate::error::Error> {
         minute,
         second,
         nanos: frac7 * 100,
-    }))
+    };
+    if !c.is_valid() {
+        return Err(err());
+    }
+    Ok(GpsTime::from_civil(c))
 }
 
 /// A RINEX satellite identifier such as `G03`, stored as three ASCII bytes.
@@ -745,6 +766,58 @@ mod tests {
         let s = "2026-05-28T05:21:37.0969400";
         let t = parse_time(s).unwrap();
         assert_eq!(t.to_string(), s);
+    }
+
+    fn civil(year: i64, month: u32, day: u32) -> Civil {
+        Civil {
+            year,
+            month,
+            day,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            nanos: 0,
+        }
+    }
+
+    #[test]
+    fn is_valid_rejects_normalizing_dates() {
+        // Real calendar dates pass.
+        assert!(civil(2026, 5, 19).is_valid());
+        assert!(civil(2024, 2, 29).is_valid()); // leap day
+        assert!(civil(2000, 12, 31).is_valid());
+        // Days past the month's length would silently roll forward.
+        assert!(!civil(2025, 2, 29).is_valid()); // not a leap year
+        assert!(!civil(2025, 2, 30).is_valid());
+        assert!(!civil(2025, 4, 31).is_valid());
+        // Out-of-range month/day/time-of-day.
+        assert!(!civil(2025, 0, 1).is_valid());
+        assert!(!civil(2025, 13, 1).is_valid());
+        assert!(!civil(2025, 1, 0).is_valid());
+        assert!(!Civil {
+            hour: 24,
+            ..civil(2025, 1, 1)
+        }
+        .is_valid());
+        assert!(!Civil {
+            minute: 60,
+            ..civil(2025, 1, 1)
+        }
+        .is_valid());
+        // A leap second is permitted.
+        assert!(Civil {
+            second: 60,
+            ..civil(2025, 1, 1)
+        }
+        .is_valid());
+    }
+
+    #[test]
+    fn parse_time_rejects_impossible_dates() {
+        // Feb 30 would normalize to Mar 2 inside from_civil; reject it instead.
+        assert!(parse_time("2025-02-30T00:00:00.0000000").is_err());
+        assert!(parse_time("2025-04-31T00:00:00.0000000").is_err());
+        assert!(parse_time("2025-02-28T00:00:00.0000000").is_ok());
     }
 
     #[test]

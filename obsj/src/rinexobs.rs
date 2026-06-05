@@ -790,7 +790,7 @@ fn parse_run_date(s: &str) -> Option<Instant> {
     let hour: u32 = tm[0..2].parse().ok()?;
     let minute: u32 = tm[2..4].parse().ok()?;
     let second: u32 = tm[4..6].parse().ok()?;
-    Some(Instant::from_civil(Civil {
+    let c = Civil {
         year,
         month,
         day,
@@ -798,7 +798,11 @@ fn parse_run_date(s: &str) -> Option<Instant> {
         minute,
         second,
         nanos: 0,
-    }))
+    };
+    if !c.is_valid() {
+        return None;
+    }
+    Some(Instant::from_civil(c))
 }
 
 fn parse_float_triple(s: &str) -> Option<[f64; 3]> {
@@ -1000,7 +1004,7 @@ fn parse_rinex_time(
     let tick: i64 = frac[..7]
         .parse()
         .map_err(|_| format!("rinex: invalid fractional second {:?}", second))?;
-    let base = GpsTime::from_civil(Civil {
+    let c = Civil {
         year: y,
         month: mo,
         day: d,
@@ -1008,7 +1012,14 @@ fn parse_rinex_time(
         minute: m,
         second: sec,
         nanos: 0,
-    });
+    };
+    if !c.is_valid() {
+        return Err(format!(
+            "rinex: invalid epoch date {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            y, mo, d, h, m, sec
+        ));
+    }
+    let base = GpsTime::from_civil(c);
     Ok(GpsTime(base.0 + tick))
 }
 

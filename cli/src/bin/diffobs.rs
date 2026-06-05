@@ -27,7 +27,7 @@ const USAGE: &str = "usage: diffobs [options] a b\n\
   --format FMT             obsj|rinex for both inputs (default obsj)\n\
   --a-format FMT           format of the first input\n\
   --b-format FMT           format of the second input\n\
-  --rinex-backend BACKEND  diy|crate|auto for RINEX inputs (default auto)\n\
+  --rinex-backend BACKEND  internal|external|auto for RINEX inputs (default auto)\n\
   --ignore-blank-phase     skip cp/ll where one side has no carrier phase\n\
   --ignore-marker          ignore marker metadata fields\n\
   --pr-tol --cp-tol --do-tol --cn0-tol --approx-pos-tol --antenna-delta-tol N\n";

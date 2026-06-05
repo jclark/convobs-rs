@@ -137,14 +137,14 @@ pub enum ObsFormat {
     Rinex,
 }
 
-/// Parses a `--rinex-backend` value (`auto`/`diy`/`crate`).
+/// Parses a `--rinex-backend` value (`auto`/`internal`/`external`).
 pub fn parse_rinex_backend(s: &str) -> std::result::Result<Option<RinexBackend>, String> {
     parse_backend(s)
 }
 
 /// Reads an observation file (obsj or RINEX) into the obsj model. Handles gzip
 /// from content and, for RINEX, the configured backend (CRINEX auto-engages the
-/// crate backend).
+/// external backend).
 pub fn read_obs_file(
     path: &str,
     format: ObsFormat,
@@ -402,7 +402,7 @@ const USAGE: &str = "usage: convobs [options] input...
       --interval SECONDS    observation decimation interval
   -p, --ppp-ar              produce output optimized for PPP-AR
   -H, --header-file PATH    TOML RINEX header metadata file
-      --rinex-backend NAME  RINEX reader: auto|diy|crate (default auto)
+      --rinex-backend NAME  RINEX reader: auto|internal|external (default auto)
 
 metadata (RINEX header fields):
       --rinex-version VER   output RINEX version (default 3.04)
@@ -676,7 +676,7 @@ fn open_writer(path: Option<&str>) -> Result<Box<dyn Write>, String> {
 fn build_sink<'a>(cfg: &Config, writer: Box<dyn Write + 'a>) -> Result<Box<dyn Sink + 'a>, Error> {
     let bw: Box<dyn Write + 'a> = Box::new(BufWriter::with_capacity(256 * 1024, writer));
     let mut sink: Box<dyn Sink + 'a> = match cfg.to {
-        OutputFormat::Rinex => rinex_sink(cfg.rinex_backend.unwrap_or(RinexBackend::Diy), bw)?,
+        OutputFormat::Rinex => rinex_sink(cfg.rinex_backend.unwrap_or(RinexBackend::Internal), bw)?,
         OutputFormat::ObsJson => Box::new(ObsJsonSink::new(bw)),
     };
     if cfg.interval_ns != 0 {

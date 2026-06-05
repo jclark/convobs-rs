@@ -10,10 +10,10 @@
 //! `ignore_marker` because convbin records the RTCM station id as the marker
 //! *name* while convobs records it as the *number*.
 //!
-//! Built with `--features convobs-cli/rinex-crate`, the suite drives the crate
-//! RINEX backend instead of the default DIY backend, and ignores blank phase
-//! (the crate cannot emit a phase field that exists only to carry a
-//! loss-of-lock flag).
+//! Built with `--features convobs-cli/rinex-crate`, the suite drives the
+//! external RINEX backend instead of the default internal backend, and ignores
+//! blank phase (the external backend cannot emit a phase field that exists only
+//! to carry a loss-of-lock flag).
 
 mod common;
 
@@ -35,11 +35,11 @@ const META_TOL: MetadataTolerances = MetadataTolerances {
     antenna_delta: 5e-5,
 };
 
-/// Whether this build links the crate RINEX backend. When it does, the golden
+/// Whether this build links the external RINEX backend. When it does, the golden
 /// suite exercises that backend (and ignores blank phase, which it cannot
-/// emit); otherwise it exercises the self-contained DIY backend at full
+/// emit); otherwise it exercises the self-contained internal backend at full
 /// fidelity.
-const USE_CRATE_BACKEND: bool = cfg!(feature = "rinex-crate");
+const USE_EXTERNAL_BACKEND: bool = cfg!(feature = "rinex-crate");
 
 struct Case {
     name: &'static str,
@@ -100,21 +100,21 @@ fn testdata(name: &str) -> String {
 }
 
 /// The backend used to read both the produced RINEX and the golden. Both sides
-/// must use the *same* backend the conversion wrote with: the crate writer and
-/// crate reader are a matched pair (the DIY reader drops the GLONASS frequency
-/// channel and antenna delta the crate writer encodes its own way, and can fail
-/// to parse the crate's RTCM header). `None` is auto, which resolves to DIY for
-/// the plain RINEX these tests use.
+/// must use the *same* backend the conversion wrote with: the external writer and
+/// external reader are a matched pair (the internal reader drops the GLONASS
+/// frequency channel and antenna delta the external writer encodes its own way,
+/// and can fail to parse the external backend's RTCM header). `None` is auto,
+/// which resolves to internal for the plain RINEX these tests use.
 fn read_backend() -> Option<RinexBackend> {
-    USE_CRATE_BACKEND.then_some(RinexBackend::Crate)
+    USE_EXTERNAL_BACKEND.then_some(RinexBackend::External)
 }
 
 fn run_case(c: &Case) {
     // Convert the raw fixture to RINEX, in process, into a buffer.
     let mut args: Vec<String> = c.flags.iter().map(|s| s.to_string()).collect();
-    if USE_CRATE_BACKEND {
+    if USE_EXTERNAL_BACKEND {
         args.push("--rinex-backend".to_string());
-        args.push("crate".to_string());
+        args.push("external".to_string());
     }
     args.push(testdata(c.input));
     let mut out = Vec::new();
@@ -135,10 +135,10 @@ fn run_case(c: &Case) {
         convobs::read_obs_file(&testdata(c.golden), ObsFormat::Rinex, backend)
             .unwrap_or_else(|e| panic!("{}: read golden {}: {e}", c.name, c.golden));
 
-    // Compare semantically. The crate backend drops blank phase, so ignore it
+    // Compare semantically. The external backend drops blank phase, so ignore it
     // there.
     let (ma, mb) = diff_metadata(&got_meta, &want_meta, META_TOL, c.ignore_marker);
-    let obs_diffs = diff_observations(&got_obs, &want_obs, OBS_TOL, USE_CRATE_BACKEND);
+    let obs_diffs = diff_observations(&got_obs, &want_obs, OBS_TOL, USE_EXTERNAL_BACKEND);
 
     let meta_differs = !ma.is_zero() || !mb.is_zero();
     if meta_differs || !obs_diffs.is_empty() {

@@ -1,11 +1,11 @@
 //! RINEX backend selection.
 //!
-//! The self-contained DIY backend (in the `obsj` crate) is the default and
-//! handles plain RINEX 3.x observation files. The `rinex`-crate bridge backend
-//! is compiled in only behind the `rinex-crate` feature and is used when asked
-//! for explicitly or when a job needs a capability the DIY backend lacks — CRINEX
-//! (Hatanaka) input, detected from content. In a lean build, asking for the crate
-//! backend (or feeding CRINEX) fails cleanly.
+//! The self-contained internal backend (in the `obsj` crate) is the default and
+//! handles plain RINEX 3.x observation files. The external `rinex`-crate bridge
+//! backend is compiled in only behind the `rinex-crate` feature and is used when
+//! asked for explicitly or when a job needs a capability the internal backend
+//! lacks — CRINEX (Hatanaka) input, detected from content. In a lean build,
+//! asking for the external backend (or feeding CRINEX) fails cleanly.
 
 use obsj::error::Error;
 use obsj::obs::{Metadata, SignalObservation};
@@ -14,14 +14,14 @@ use std::io::{BufRead, Write};
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum RinexBackend {
-    Diy,
-    Crate,
+    Internal,
+    External,
 }
 
 const NOT_COMPILED: &str =
-    "the crate RINEX backend is not compiled in; rebuild with --features rinex-crate";
+    "the external RINEX backend is not compiled in; rebuild with --features rinex-crate";
 
-const fn crate_available() -> bool {
+const fn external_available() -> bool {
     cfg!(feature = "rinex-crate")
 }
 
@@ -29,10 +29,10 @@ const fn crate_available() -> bool {
 pub fn parse_backend(s: &str) -> Result<Option<RinexBackend>, String> {
     match s.to_lowercase().as_str() {
         "auto" => Ok(None),
-        "diy" => Ok(Some(RinexBackend::Diy)),
-        "crate" => Ok(Some(RinexBackend::Crate)),
+        "internal" => Ok(Some(RinexBackend::Internal)),
+        "external" => Ok(Some(RinexBackend::External)),
         other => Err(format!(
-            "unsupported RINEX backend {other:?} (expected diy, crate, or auto)"
+            "unsupported RINEX backend {other:?} (expected internal, external, or auto)"
         )),
     }
 }
@@ -49,17 +49,20 @@ pub fn open_rinex_input(
 
 fn resolve_input(explicit: Option<RinexBackend>, crinex: bool) -> Result<RinexBackend, Error> {
     match explicit {
-        Some(RinexBackend::Diy) if crinex => Err(Error::Rinex(
-            "CRINEX input needs the crate RINEX backend; do not pass --rinex-backend diy".into(),
-        )),
-        Some(RinexBackend::Crate) if !crate_available() => Err(Error::Rinex(NOT_COMPILED.into())),
-        Some(b) => Ok(b),
-        None if crinex && !crate_available() => Err(Error::Rinex(
-            "CRINEX input needs the crate RINEX backend; rebuild with --features rinex-crate"
+        Some(RinexBackend::Internal) if crinex => Err(Error::Rinex(
+            "CRINEX input needs the external RINEX backend; do not pass --rinex-backend internal"
                 .into(),
         )),
-        None if crinex => Ok(RinexBackend::Crate),
-        None => Ok(RinexBackend::Diy),
+        Some(RinexBackend::External) if !external_available() => {
+            Err(Error::Rinex(NOT_COMPILED.into()))
+        }
+        Some(b) => Ok(b),
+        None if crinex && !external_available() => Err(Error::Rinex(
+            "CRINEX input needs the external RINEX backend; rebuild with --features rinex-crate"
+                .into(),
+        )),
+        None if crinex => Ok(RinexBackend::External),
+        None => Ok(RinexBackend::Internal),
     }
 }
 
@@ -75,8 +78,8 @@ pub fn read_rinex(
     r: Box<dyn BufRead>,
 ) -> Result<(Metadata, Vec<SignalObservation>), Error> {
     match backend {
-        RinexBackend::Diy => obsj::rinexobs::read_observation_file(r),
-        RinexBackend::Crate => read_crate(r),
+        RinexBackend::Internal => obsj::rinexobs::read_observation_file(r),
+        RinexBackend::External => read_external(r),
     }
 }
 
@@ -86,27 +89,27 @@ pub fn rinex_sink<'a>(
     w: Box<dyn Write + 'a>,
 ) -> Result<Box<dyn Sink + 'a>, Error> {
     match backend {
-        RinexBackend::Diy => Ok(Box::new(obsj::rinexobs::RinexSink::new(w))),
-        RinexBackend::Crate => sink_crate(w),
+        RinexBackend::Internal => Ok(Box::new(obsj::rinexobs::RinexSink::new(w))),
+        RinexBackend::External => sink_external(w),
     }
 }
 
 #[cfg(feature = "rinex-crate")]
-fn read_crate(r: Box<dyn BufRead>) -> Result<(Metadata, Vec<SignalObservation>), Error> {
+fn read_external(r: Box<dyn BufRead>) -> Result<(Metadata, Vec<SignalObservation>), Error> {
     rinex_obsj::read_observation_file(r)
 }
 
 #[cfg(not(feature = "rinex-crate"))]
-fn read_crate(_r: Box<dyn BufRead>) -> Result<(Metadata, Vec<SignalObservation>), Error> {
+fn read_external(_r: Box<dyn BufRead>) -> Result<(Metadata, Vec<SignalObservation>), Error> {
     Err(Error::Rinex(NOT_COMPILED.into()))
 }
 
 #[cfg(feature = "rinex-crate")]
-fn sink_crate<'a>(w: Box<dyn Write + 'a>) -> Result<Box<dyn Sink + 'a>, Error> {
+fn sink_external<'a>(w: Box<dyn Write + 'a>) -> Result<Box<dyn Sink + 'a>, Error> {
     Ok(Box::new(rinex_obsj::RinexSink::new(w)))
 }
 
 #[cfg(not(feature = "rinex-crate"))]
-fn sink_crate<'a>(_w: Box<dyn Write + 'a>) -> Result<Box<dyn Sink + 'a>, Error> {
+fn sink_external<'a>(_w: Box<dyn Write + 'a>) -> Result<Box<dyn Sink + 'a>, Error> {
     Err(Error::Rinex(NOT_COMPILED.into()))
 }

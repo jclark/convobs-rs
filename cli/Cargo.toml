@@ -21,7 +21,7 @@ path = "src/bin/diffobs.rs"
 default = []
 # Link the `rinex` crate (via the rinex-obsj bridge) as an optional RINEX
 # backend, adding CRINEX/Hatanaka support. Off by default → a lean binary that
-# uses only the self-contained DIY RINEX backend.
+# uses only the self-contained internal RINEX backend.
 rinex-crate = ["dep:rinex-obsj"]
 
 [dependencies]

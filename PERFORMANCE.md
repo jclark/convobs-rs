@@ -1,8 +1,7 @@
 # convobs-rs — performance report
 
-Stage 9 of the `PLAN.md` migration: profile the hot path, take the easy wins,
-report. The hot path is large JSONL packet logs converted to obsj with
-`--interval 30` (typical PPP usage).
+Profiling the hot path and taking the easy wins. The hot path is large JSONL
+packet logs converted to obsj with `--interval 30` (typical PPP usage).
 
 ## Method
 
@@ -20,7 +19,7 @@ functions.
 
 ## Profile (RTCM `--interval 30`), before → after
 
-Top self-time before the stage-9 changes:
+Top self-time before the optimizations below:
 
 | % | function |
 |---|---|
@@ -50,7 +49,7 @@ and inherent costs, not worth chasing.
    message, so it is decoded directly instead of validated by `frames()` and
    again by `convert_frame`.
 
-Effect (vs the pre-stage-9 build): serpa RTCM `--interval 30` 4.64 s → 2.85 s;
+Effect (vs the pre-optimization build): serpa RTCM `--interval 30` 4.64 s → 2.85 s;
 maasdam UBX `--interval 30` 1.31 s → 0.51 s; x20p UBX `--interval 30`
 2.2 s → 1.05 s. Items 2 and 3 (the profile-driven hex + hash swaps) were the
 bulk of it.

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Bridge between the obsj observation model and the `rinex` crate, shaped for upstreaming."
+description = "Bridge between the obsj observation model and the `rinex` crate."
 
 [dependencies]
 obsj = { workspace = true }

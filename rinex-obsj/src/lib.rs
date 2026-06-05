@@ -4,8 +4,7 @@
 //! its epoch-keyed model and obsj's flat one, going through obsj's centralized
 //! loss-of-lock transform (`arc → ll` on write, `ll → arc` on read). The whole
 //! mapping is the [`RinexObsj`] extension trait on [`Rinex`] plus a couple of
-//! free helpers, so it can be contributed upstream as the `rinex` crate's own
-//! `obsj` feature with a near-mechanical change — it touches public APIs only.
+//! free helpers, built entirely on the `rinex` crate's public API.
 //!
 //! Output is validated semantically (diffobs at 5e-4), so the crate's formatting
 //! choices need not match any particular byte layout. The one thing the crate
@@ -25,8 +24,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::str::FromStr;
 
-/// Maps a [`Rinex`] observation record to and from the obsj model. Shaped as an
-/// extension trait over public `rinex` APIs so it is upstreamable as-is.
+/// Maps a [`Rinex`] observation record to and from the obsj model, as an
+/// extension trait over the `rinex` crate's public API.
 pub trait RinexObsj {
     /// Builds a RINEX observation record from obsj metadata and observations.
     fn from_obsj(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Error>;

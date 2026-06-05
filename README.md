@@ -36,5 +36,21 @@ implementation runs about 5× faster.
 With a [Rust toolchain](https://rustup.rs/) installed, run `make release`; the
 `convobs` and `diffobs` binaries are written to `target/release`. Run `make` on
 its own to list all targets, or `make install` to install the binaries into
-`~/.cargo/bin`. To support CRINEX (Hatanaka-compressed) RINEX input, build with
-the external backend using `make release-full` (or `make install-full`).
+`~/.cargo/bin`.
+
+The project is a Cargo workspace of three crates:
+
+- **`obsj`** — the core library: the `obsj` observation model and format, the
+  carrier-phase arc / loss-of-lock logic, a semantic diff, and a self-contained
+  RINEX 3.x reader/writer (the *internal* backend). Optional `rtcm` and `ubx`
+  features add the raw-stream converters. Pure Rust, with permissively licensed
+  dependencies only.
+- **`rinex-obsj`** — a bridge to the third-party
+  [`rinex`](https://crates.io/crates/rinex) crate (the *external* backend),
+  which adds CRINEX (Hatanaka-compressed) input.
+- **`convobs-cli`** — the `convobs` and `diffobs` binaries.
+
+The external backend is optional, gated behind the CLI's `rinex-crate` feature.
+The default build (`make release`) omits it for a lean, fully MIT-licensed
+binary; `make release-full` (or `make install-full`) enables it, linking the
+`rinex` crate and its MPL-2.0 dependencies and adding CRINEX support.

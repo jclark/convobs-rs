@@ -12,7 +12,7 @@ the convbin flags for every case) only when the reference itself changes, and
 review any resulting observation differences before committing. `cargo test`
 never runs `convbin`; it only reads the committed `.obs.gz` goldens.
 
-These fixtures were ported from the Go reference repo
+These fixtures were ported from the SatPulse repo
 (`satpulse/internal/convobscmd/testdata`). The Unicore `um980-uncb` pair is out
 of scope here — convobs-rs does not support the Unicore input format — so only
 the UBX and RTCM pairs are committed.

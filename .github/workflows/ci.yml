@@ -1,7 +1,3 @@
-# Hermetic CI: cargo test and clippy, with no Go checkout and no external tools.
-# The committed testdata/ goldens make the golden test self-contained, so this is
-# the authoritative gate (the tmp/t/*.sh oracle scripts remain an extra,
-# non-hermetic cross-check against the live Go oracle for local runs).
 name: CI
 
 on:

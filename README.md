@@ -43,8 +43,7 @@ The project is a Cargo workspace of three crates:
 - **`obsj`** — the core library: the `obsj` observation model and format, the
   carrier-phase arc / loss-of-lock logic, a semantic diff, and a self-contained
   RINEX 3.x reader/writer (the *internal* backend). Optional `rtcm` and `ubx`
-  features add the raw-stream converters. Pure Rust, with permissively licensed
-  dependencies only.
+  features add the raw-stream converters.
 - **`rinex-obsj`** — a bridge to the third-party
   [`rinex`](https://crates.io/crates/rinex) crate (the *external* backend),
   which adds CRINEX (Hatanaka-compressed) input.

@@ -90,7 +90,9 @@ pub fn read_obsj(r: impl BufRead) -> Result<(Metadata, Vec<SignalObservation>), 
 
 enum Record {
     Observation(SignalObservation),
-    Metadata(Metadata),
+    // Boxed: a `Metadata` is far larger than a `SignalObservation`, and metadata
+    // records are rare, so keep the common variant small.
+    Metadata(Box<Metadata>),
 }
 
 /// One obsj line, in a single serde pass. A flat struct (no `Value`
@@ -216,7 +218,7 @@ fn parse_record(line: &str) -> Result<Record, String> {
             m.antenna_delta = r.antenna_delta;
             m.interval = r.interval;
             m.leap_seconds = r.leap_seconds;
-            Ok(Record::Metadata(m))
+            Ok(Record::Metadata(Box::new(m)))
         }
     }
 }

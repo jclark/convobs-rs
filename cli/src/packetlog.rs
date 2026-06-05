@@ -33,7 +33,7 @@ impl<'a> Entry<'a> {
 /// `faster-hex`'s SIMD decoder — the dominant cost when converting packet logs.
 pub fn hex_decode(s: &str, out: &mut Vec<u8>) -> Result<(), String> {
     let b = s.as_bytes();
-    if b.len() % 2 != 0 {
+    if !b.len().is_multiple_of(2) {
         return Err("odd-length hex string".to_string());
     }
     out.clear();

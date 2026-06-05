@@ -129,9 +129,11 @@ mod tests {
     }
 
     fn obs(t: i64, ll: bool) -> SignalObservation {
-        let mut v = SignalValues::default();
-        v.ll = ll;
-        v.cp = Some(1.0);
+        let v = SignalValues {
+            ll,
+            cp: Some(1.0),
+            ..Default::default()
+        };
         SignalObservation {
             t: GpsTime(t),
             sat: SatId::format(b'G', 1),

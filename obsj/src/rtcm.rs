@@ -235,71 +235,86 @@ impl<S: Sink> Converter<S> {
             }
             Message::Msg1005(t) => {
                 self.set_week(week);
-                let mut m = Metadata::default();
-                m.approx_position = Some([
-                    t.antenna_ref_point_ecef_x_m,
-                    t.antenna_ref_point_ecef_y_m,
-                    t.antenna_ref_point_ecef_z_m,
-                ]);
-                m.marker.number = t.reference_station_id.to_string();
-                self.emit_metadata(&m)
+                self.emit_metadata(&Metadata {
+                    approx_position: Some([
+                        t.antenna_ref_point_ecef_x_m,
+                        t.antenna_ref_point_ecef_y_m,
+                        t.antenna_ref_point_ecef_z_m,
+                    ]),
+                    marker: station_marker(t.reference_station_id),
+                    ..Default::default()
+                })
             }
             Message::Msg1006(t) => {
                 self.set_week(week);
-                let mut m = Metadata::default();
-                m.approx_position = Some([
-                    t.antenna_ref_point_ecef_x_m,
-                    t.antenna_ref_point_ecef_y_m,
-                    t.antenna_ref_point_ecef_z_m,
-                ]);
-                m.antenna_delta = Some([t.antenna_height_m, 0.0, 0.0]);
-                m.marker.number = t.reference_station_id.to_string();
-                self.emit_metadata(&m)
+                self.emit_metadata(&Metadata {
+                    approx_position: Some([
+                        t.antenna_ref_point_ecef_x_m,
+                        t.antenna_ref_point_ecef_y_m,
+                        t.antenna_ref_point_ecef_z_m,
+                    ]),
+                    antenna_delta: Some([t.antenna_height_m, 0.0, 0.0]),
+                    marker: station_marker(t.reference_station_id),
+                    ..Default::default()
+                })
             }
             Message::Msg1007(t) => {
                 self.set_week(week);
-                let mut m = Metadata::default();
-                m.antenna.type_ = clean(&t.antenna_descriptor_str);
-                m.marker.number = t.reference_station_id.to_string();
-                self.emit_metadata(&m)
+                self.emit_metadata(&Metadata {
+                    antenna: Antenna {
+                        type_: clean(&t.antenna_descriptor_str),
+                        ..Default::default()
+                    },
+                    marker: station_marker(t.reference_station_id),
+                    ..Default::default()
+                })
             }
             Message::Msg1008(t) => {
                 self.set_week(week);
-                let mut m = Metadata::default();
-                m.antenna.type_ = clean(&t.antenna_descriptor_str);
-                m.antenna.number = clean(&t.antenna_serial_number_str);
-                m.marker.number = t.reference_station_id.to_string();
-                self.emit_metadata(&m)
+                self.emit_metadata(&Metadata {
+                    antenna: Antenna {
+                        type_: clean(&t.antenna_descriptor_str),
+                        number: clean(&t.antenna_serial_number_str),
+                    },
+                    marker: station_marker(t.reference_station_id),
+                    ..Default::default()
+                })
             }
             Message::Msg1013(t) => {
                 self.set_week(week);
-                let mut m = Metadata::default();
+                let mut m = Metadata {
+                    marker: station_marker(t.reference_station_id),
+                    ..Default::default()
+                };
                 if let Some(leap) = t.leap_seconds_gps_utc_s {
                     let leap = leap as i16;
                     self.leap_ms = leap as i64 * SECOND_MS;
                     m.leap_seconds = Some(leap);
                 }
-                m.marker.number = t.reference_station_id.to_string();
                 self.emit_metadata(&m)
             }
             Message::Msg1033(t) => {
                 self.set_week(week);
-                let mut m = Metadata::default();
-                m.antenna.type_ = clean(&t.antenna_descriptor_str);
-                m.antenna.number = clean(&t.antenna_serial_number_str);
-                m.receiver = Receiver {
-                    number: clean(&t.receiver_serial_number_str),
-                    type_: clean(&t.receiver_type_descriptor_str),
-                    version: clean(&t.receiver_firmware_version_str),
-                };
-                m.marker.number = t.reference_station_id.to_string();
-                self.emit_metadata(&m)
+                self.emit_metadata(&Metadata {
+                    antenna: Antenna {
+                        type_: clean(&t.antenna_descriptor_str),
+                        number: clean(&t.antenna_serial_number_str),
+                    },
+                    receiver: Receiver {
+                        number: clean(&t.receiver_serial_number_str),
+                        type_: clean(&t.receiver_type_descriptor_str),
+                        version: clean(&t.receiver_firmware_version_str),
+                    },
+                    marker: station_marker(t.reference_station_id),
+                    ..Default::default()
+                })
             }
             Message::Msg1230(t) => {
                 self.set_week(week);
-                let mut m = Metadata::default();
-                m.marker.number = t.reference_station_id.to_string();
-                self.emit_metadata(&m)
+                self.emit_metadata(&Metadata {
+                    marker: station_marker(t.reference_station_id),
+                    ..Default::default()
+                })
             }
             _ => {
                 self.set_week(week);
@@ -558,19 +573,69 @@ fn cn0(cnr: Option<f64>) -> Option<f32> {
 fn rinex_sat_num(gnss: Gnss, sat_id: u8) -> u8 {
     let in_range = |hi| (1..=hi).contains(&sat_id);
     match gnss {
-        Gnss::Gps => in_range(63).then_some(sat_id).unwrap_or(0),
-        Gnss::Glonass => in_range(24).then_some(sat_id).unwrap_or(0),
-        Gnss::Galileo => in_range(50).then_some(sat_id).unwrap_or(0),
-        Gnss::Sbas => in_range(39).then_some(sat_id + 19).unwrap_or(0),
-        Gnss::Qzss => in_range(10).then_some(sat_id).unwrap_or(0),
-        Gnss::Beidou => in_range(63).then_some(sat_id).unwrap_or(0),
-        Gnss::Irnss => in_range(14).then_some(sat_id).unwrap_or(0),
+        Gnss::Gps => {
+            if in_range(63) {
+                sat_id
+            } else {
+                0
+            }
+        }
+        Gnss::Glonass => {
+            if in_range(24) {
+                sat_id
+            } else {
+                0
+            }
+        }
+        Gnss::Galileo => {
+            if in_range(50) {
+                sat_id
+            } else {
+                0
+            }
+        }
+        Gnss::Sbas => {
+            if in_range(39) {
+                sat_id + 19
+            } else {
+                0
+            }
+        }
+        Gnss::Qzss => {
+            if in_range(10) {
+                sat_id
+            } else {
+                0
+            }
+        }
+        Gnss::Beidou => {
+            if in_range(63) {
+                sat_id
+            } else {
+                0
+            }
+        }
+        Gnss::Irnss => {
+            if in_range(14) {
+                sat_id
+            } else {
+                0
+            }
+        }
     }
 }
 
 /// Trims trailing spaces and NULs from an RTCM descriptor string.
 fn clean(s: &impl core::fmt::Display) -> String {
     s.to_string().trim_end_matches([' ', '\0']).to_string()
+}
+
+/// A marker carrying just the RTCM reference station id as its number.
+fn station_marker(reference_station_id: u16) -> Marker {
+    Marker {
+        number: reference_station_id.to_string(),
+        ..Default::default()
+    }
 }
 
 // ---- week resolution ----

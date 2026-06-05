@@ -303,7 +303,7 @@ fn write_header(out: &mut String, meta: &Metadata, f: &ObsFile) {
     if !f.frq.is_empty() {
         write_glonass_freq(out, &f.frq);
     }
-    if f.codes.get(&b'R').map_or(false, |c| !c.is_empty()) {
+    if f.codes.get(&b'R').is_some_and(|c| !c.is_empty()) {
         header_line(
             out,
             " C1C    0.000 C1P    0.000 C2C    0.000 C2P    0.000",
@@ -324,7 +324,7 @@ fn header_line(out: &mut String, content: &str, label: &str) {
     } else {
         content
     };
-    let _ = write!(out, "{:<60}{:<20}\n", content, label);
+    let _ = writeln!(out, "{:<60}{:<20}", content, label);
 }
 
 fn header_system(codes: &HashMap<u8, Vec<ObsCode>>) -> &'static str {
@@ -347,7 +347,7 @@ fn header_system(codes: &HashMap<u8, Vec<ObsCode>>) -> &'static str {
 fn ordered_systems(codes: &HashMap<u8, Vec<ObsCode>>) -> Vec<u8> {
     let mut systems = Vec::new();
     for &sys in &SYSTEM_ORDER {
-        if codes.get(&sys).map_or(false, |c| !c.is_empty()) {
+        if codes.get(&sys).is_some_and(|c| !c.is_empty()) {
             systems.push(sys);
         }
     }
@@ -873,7 +873,7 @@ fn read_glonass_freq_header(content: &str, frq: &mut HashMap<SatId, i8>) -> Resu
         let n: i64 = fields[i + 1]
             .parse()
             .map_err(|_| format!("rinex: invalid GLONASS frequency {:?}", fields[i + 1]))?;
-        if let Some(sat) = SatId::from_str(fields[i]) {
+        if let Ok(sat) = fields[i].parse::<SatId>() {
             frq.insert(sat, n as i8);
         }
         i += 2;
@@ -1026,7 +1026,7 @@ fn parse_satellite_observation_line(
             continue;
         }
         let sig = code.signal();
-        if !by_sig.contains_key(&sig) {
+        by_sig.entry(sig).or_insert_with(|| {
             order.push(sig);
             let mut o = SignalObservation {
                 t,
@@ -1037,8 +1037,8 @@ fn parse_satellite_observation_line(
             if let Some(&v) = h.frq.get(&sat) {
                 o.v.frq = Some(v);
             }
-            by_sig.insert(sig, o);
-        }
+            o
+        });
         let o = by_sig.get_mut(&sig).unwrap();
         add_rinex_field(o, *code, &field);
     }
@@ -1152,9 +1152,11 @@ mod tests {
     }
 
     fn pr_only(t: GpsTime, arc: u32) -> SignalObservation {
-        let mut v = SignalValues::default();
-        v.pr = Some(20_000_000.0);
-        v.arc = arc;
+        let v = SignalValues {
+            pr: Some(20_000_000.0),
+            arc,
+            ..Default::default()
+        };
         SignalObservation {
             t,
             sat: SatId::format(b'G', 1),

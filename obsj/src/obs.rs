@@ -168,7 +168,12 @@ pub fn parse_time(s: &str) -> Result<GpsTime, String> {
     let minute: u32 = t[1].parse().map_err(|_| err())?;
     let second: u32 = t[2].parse().map_err(|_| err())?;
     let frac7: u32 = frac.parse().map_err(|_| err())?;
-    if month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 60 {
+    if !(1..=12).contains(&month)
+        || !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+    {
         return Err(err());
     }
     Ok(GpsTime::from_civil(Civil {
@@ -203,18 +208,31 @@ impl SatId {
     pub fn format(sys: u8, num: u8) -> SatId {
         SatId([sys, b'0' + (num / 10) % 10, b'0' + num % 10])
     }
+}
 
-    pub fn from_str(s: &str) -> Option<SatId> {
+/// Error parsing a [`SatId`] or [`SigId`] from a string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParseIdError;
+
+impl fmt::Display for ParseIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("invalid GNSS identifier")
+    }
+}
+
+impl std::error::Error for ParseIdError {}
+
+impl std::str::FromStr for SatId {
+    type Err = ParseIdError;
+    fn from_str(s: &str) -> Result<SatId, ParseIdError> {
         let b = s.as_bytes();
-        if b.len() != 3 {
-            return None;
+        if b.len() == 3 {
+            let id = SatId([b[0], b[1], b[2]]);
+            if id.is_valid() {
+                return Ok(id);
+            }
         }
-        let id = SatId([b[0], b[1], b[2]]);
-        if id.is_valid() {
-            Some(id)
-        } else {
-            None
-        }
+        Err(ParseIdError)
     }
 }
 
@@ -247,29 +265,30 @@ impl SigId {
     pub fn is_valid(self) -> bool {
         let b = self.0[0];
         let a = self.0[1];
-        (b'1'..=b'9').contains(&b) && (b'A'..=b'Z').contains(&a)
+        (b'1'..=b'9').contains(&b) && a.is_ascii_uppercase()
     }
 
     pub fn as_str(&self) -> &str {
         std::str::from_utf8(&self.0).unwrap_or("")
     }
 
-    pub fn from_str(s: &str) -> Option<SigId> {
-        let b = s.as_bytes();
-        if b.len() != 2 {
-            return None;
-        }
-        let id = SigId([b[0], b[1]]);
-        if id.is_valid() {
-            Some(id)
-        } else {
-            None
-        }
-    }
-
     /// The full three-character observation code for `typ` (`C`/`L`/`D`/`S`).
     pub fn code(self, typ: u8) -> ObsCode {
         ObsCode([typ, self.0[0], self.0[1]])
+    }
+}
+
+impl std::str::FromStr for SigId {
+    type Err = ParseIdError;
+    fn from_str(s: &str) -> Result<SigId, ParseIdError> {
+        let b = s.as_bytes();
+        if b.len() == 2 {
+            let id = SigId([b[0], b[1]]);
+            if id.is_valid() {
+                return Ok(id);
+            }
+        }
+        Err(ParseIdError)
     }
 }
 
@@ -683,8 +702,8 @@ impl Serialize for SatId {
 impl<'de> Deserialize<'de> for SatId {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = <std::borrow::Cow<str>>::deserialize(d)?;
-        SatId::from_str(&s)
-            .ok_or_else(|| de::Error::custom(format!("invalid satellite identifier {s:?}")))
+        s.parse()
+            .map_err(|_| de::Error::custom(format!("invalid satellite identifier {s:?}")))
     }
 }
 
@@ -697,8 +716,8 @@ impl Serialize for SigId {
 impl<'de> Deserialize<'de> for SigId {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = <std::borrow::Cow<str>>::deserialize(d)?;
-        SigId::from_str(&s)
-            .ok_or_else(|| de::Error::custom(format!("invalid signal identifier {s:?}")))
+        s.parse()
+            .map_err(|_| de::Error::custom(format!("invalid signal identifier {s:?}")))
     }
 }
 
@@ -759,8 +778,8 @@ mod tests {
     fn sat_format() {
         assert_eq!(SatId::format(b'G', 3).as_str(), "G03");
         assert_eq!(SatId::format(b'C', 14).as_str(), "C14");
-        assert!(SatId::from_str("G03").is_some());
-        assert!(SatId::from_str("X03").is_none());
-        assert!(SatId::from_str("G00").is_none());
+        assert!("G03".parse::<SatId>().is_ok());
+        assert!("X03".parse::<SatId>().is_err());
+        assert!("G00".parse::<SatId>().is_err());
     }
 }

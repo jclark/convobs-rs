@@ -15,7 +15,7 @@
 use obsj::arc::{ArcToLl, LossOfLockSink};
 use obsj::obs::*;
 use obsj::sink::Sink;
-use rinex::observation::{EpochFlag, LliFlags, ObsKey, Observations, SignalObservation as XSig};
+use rinex::observation::{EpochFlag, LliFlags, ObsKey, SignalObservation as XSig};
 use rinex::prelude::{
     Constellation, Duration, Epoch, Header, Observable, Rinex, TimeScale, Version, SV,
 };
@@ -84,7 +84,7 @@ impl<W: Write> Sink for RinexSink<W> {
         let mut bw = BufWriter::new(&mut self.writer);
         rinex
             .format(&mut bw)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
         bw.flush()
     }
 }
@@ -162,7 +162,7 @@ fn build_rinex(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Stri
                 epoch: to_epoch(o.t),
                 flag: EpochFlag::Ok,
             })
-            .or_insert_with(Observations::default);
+            .or_default();
 
         let mut push = |typ: u8, value: f64, lli: Option<LliFlags>| {
             let obs_code = observable(typ, o.sig);
@@ -317,28 +317,40 @@ pub fn read_observation_file<R: Read>(r: R) -> Result<(Metadata, Vec<SignalObser
 }
 
 fn metadata_from_header(header: &Header) -> Metadata {
-    let mut meta = Metadata::default();
-    meta.version = format!("{}.{:02}", header.version.major, header.version.minor);
-    meta.run.program = header.program.clone().unwrap_or_default();
-    meta.run.by = header.run_by.clone().unwrap_or_default();
-    meta.observer = header.observer.clone().unwrap_or_default();
-    meta.agency = header.agency.clone().unwrap_or_default();
+    let mut meta = Metadata {
+        version: format!("{}.{:02}", header.version.major, header.version.minor),
+        run: MetadataRun {
+            program: header.program.clone().unwrap_or_default(),
+            by: header.run_by.clone().unwrap_or_default(),
+            date: None,
+        },
+        observer: header.observer.clone().unwrap_or_default(),
+        agency: header.agency.clone().unwrap_or_default(),
+        approx_position: header.rx_position.map(|(x, y, z)| [x, y, z]),
+        interval: header.sampling_interval.map(|d| d.to_seconds()),
+        leap_seconds: header.leap.as_ref().map(|l| l.leap as i16),
+        ..Default::default()
+    };
     if let Some(marker) = &header.geodetic_marker {
-        meta.marker.name = marker.name.clone();
-        meta.marker.number = marker.number().unwrap_or_default();
+        meta.marker = Marker {
+            name: marker.name.clone(),
+            number: marker.number().unwrap_or_default(),
+            ..Default::default()
+        };
     }
     if let Some(rx) = &header.rcvr {
-        meta.receiver.number = rx.sn.clone();
-        meta.receiver.type_ = rx.model.clone();
-        meta.receiver.version = rx.firmware.clone();
+        meta.receiver = Receiver {
+            number: rx.sn.clone(),
+            type_: rx.model.clone(),
+            version: rx.firmware.clone(),
+        };
     }
     if let Some(ant) = &header.rcvr_antenna {
-        meta.antenna.number = ant.sn.clone();
-        meta.antenna.type_ = ant.model.clone();
+        meta.antenna = Antenna {
+            number: ant.sn.clone(),
+            type_: ant.model.clone(),
+        };
     }
-    meta.approx_position = header.rx_position.map(|(x, y, z)| [x, y, z]);
-    meta.interval = header.sampling_interval.map(|d| d.to_seconds());
-    meta.leap_seconds = header.leap.as_ref().map(|l| l.leap as i16);
     meta
 }
 
@@ -446,10 +458,9 @@ fn observable_kind(o: &Observable) -> ObsKind {
 }
 
 fn satid(sv: SV) -> Option<SatId> {
-    SatId::from_str(&sv.to_string())
+    sv.to_string().parse().ok()
 }
 
 fn signal_id(o: &Observable) -> Option<SigId> {
-    let code = o.code()?;
-    SigId::from_str(&code)
+    o.code()?.parse().ok()
 }

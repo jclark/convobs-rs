@@ -8,7 +8,9 @@ use crate::error::Error;
 use crate::packetlog::{hex_decode, Entry};
 use crate::rinex_backend::{open_rinex_input, parse_backend, read_rinex, rinex_sink};
 use obsj::json::{read_obsj, stream_obsj, ObsJsonSink};
-use obsj::obs::{Civil, Instant, Metadata, SignalObservation};
+use obsj::obs::{
+    Antenna, Civil, Instant, Marker, Metadata, MetadataRun, Receiver, SignalObservation,
+};
 use obsj::rtcm::{self, TimeInterval};
 use obsj::sink::{
     decimation_interval_ticks, validate_decimation_interval, DecimationSink, RequireCpFilter, Sink,
@@ -554,38 +556,48 @@ struct TomlAntenna {
 
 fn read_header_file(text: &str) -> Result<Metadata, String> {
     let tm: TomlMeta = toml::from_str(text).map_err(|e| e.to_string())?;
-    let mut meta = Metadata::default();
-    meta.version = tm.version.unwrap_or_default();
-    if let Some(run) = tm.run {
-        meta.run.program = run.program.unwrap_or_default();
-        meta.run.by = run.by.unwrap_or_default();
-        meta.run.date = run.date.and_then(toml_datetime_to_instant);
-    }
-    meta.comment = match tm.comment {
-        Some(TomlComment::One(s)) => s.lines().map(str::to_string).collect(),
-        Some(TomlComment::Many(v)) => v,
-        None => Vec::new(),
+    let mut meta = Metadata {
+        version: tm.version.unwrap_or_default(),
+        comment: match tm.comment {
+            Some(TomlComment::One(s)) => s.lines().map(str::to_string).collect(),
+            Some(TomlComment::Many(v)) => v,
+            None => Vec::new(),
+        },
+        observer: tm.observer.unwrap_or_default(),
+        agency: tm.agency.unwrap_or_default(),
+        approx_position: tm.approx_position,
+        antenna_delta: tm.antenna_delta,
+        interval: tm.interval,
+        leap_seconds: tm.leap_seconds,
+        ..Default::default()
     };
-    if let Some(mk) = tm.marker {
-        meta.marker.name = mk.name.unwrap_or_default();
-        meta.marker.number = mk.number.unwrap_or_default();
-        meta.marker.type_ = mk.type_.unwrap_or_default();
+    if let Some(run) = tm.run {
+        meta.run = MetadataRun {
+            program: run.program.unwrap_or_default(),
+            by: run.by.unwrap_or_default(),
+            date: run.date.and_then(toml_datetime_to_instant),
+        };
     }
-    meta.observer = tm.observer.unwrap_or_default();
-    meta.agency = tm.agency.unwrap_or_default();
+    if let Some(mk) = tm.marker {
+        meta.marker = Marker {
+            name: mk.name.unwrap_or_default(),
+            number: mk.number.unwrap_or_default(),
+            type_: mk.type_.unwrap_or_default(),
+        };
+    }
     if let Some(rx) = tm.receiver {
-        meta.receiver.number = rx.number.unwrap_or_default();
-        meta.receiver.type_ = rx.type_.unwrap_or_default();
-        meta.receiver.version = rx.version.unwrap_or_default();
+        meta.receiver = Receiver {
+            number: rx.number.unwrap_or_default(),
+            type_: rx.type_.unwrap_or_default(),
+            version: rx.version.unwrap_or_default(),
+        };
     }
     if let Some(an) = tm.antenna {
-        meta.antenna.number = an.number.unwrap_or_default();
-        meta.antenna.type_ = an.type_.unwrap_or_default();
+        meta.antenna = Antenna {
+            number: an.number.unwrap_or_default(),
+            type_: an.type_.unwrap_or_default(),
+        };
     }
-    meta.approx_position = tm.approx_position;
-    meta.antenna_delta = tm.antenna_delta;
-    meta.interval = tm.interval;
-    meta.leap_seconds = tm.leap_seconds;
     Ok(meta)
 }
 
@@ -1183,17 +1195,16 @@ impl PacketDriver {
                     })?;
                 }
             }
-            "UBX" => {
+            "UBX"
                 // Each packet-log payload is one UBX frame; most are not
                 // RXM-RAWX, so skip those without a full decode.
-                if ubx::is_rawx_frame(payload) {
+                if ubx::is_rawx_frame(payload) => {
                     if let Some(c) = self.use_ubx() {
                         if c.convert_chunk(payload)? > 0 {
                             produced = true;
                         }
                     }
                 }
-            }
             _ => {}
         }
         Ok(produced)

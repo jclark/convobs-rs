@@ -156,7 +156,7 @@ fn diff_keys(
             }
         }
     }
-    out.sort_unstable_by(|x, y| (x.0, x.1).cmp(&(y.0, y.1)));
+    out.sort_unstable_by_key(|x| (x.0, x.1));
     out
 }
 
@@ -199,7 +199,7 @@ fn diff_signal(
             let mut ar = SignalDiff::default();
             let mut br = SignalDiff::default();
             // frq (exact)
-            if !(a.frq == b.frq) {
+            if a.frq != b.frq {
                 ar.v.frq = a.frq;
                 br.v.frq = b.frq;
             }

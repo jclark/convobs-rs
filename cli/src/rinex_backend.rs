@@ -81,7 +81,10 @@ pub fn read_rinex(
 }
 
 /// Builds a RINEX output sink for the given backend (output is never CRINEX).
-pub fn rinex_sink(backend: RinexBackend, w: Box<dyn Write>) -> Result<Box<dyn Sink>, Error> {
+pub fn rinex_sink<'a>(
+    backend: RinexBackend,
+    w: Box<dyn Write + 'a>,
+) -> Result<Box<dyn Sink + 'a>, Error> {
     match backend {
         RinexBackend::Diy => Ok(Box::new(obsj::rinexobs::RinexSink::new(w))),
         RinexBackend::Crate => sink_crate(w),
@@ -99,11 +102,11 @@ fn read_crate(_r: Box<dyn BufRead>) -> Result<(Metadata, Vec<SignalObservation>)
 }
 
 #[cfg(feature = "rinex-crate")]
-fn sink_crate(w: Box<dyn Write>) -> Result<Box<dyn Sink>, Error> {
+fn sink_crate<'a>(w: Box<dyn Write + 'a>) -> Result<Box<dyn Sink + 'a>, Error> {
     Ok(Box::new(rinex_obsj::RinexSink::new(w)))
 }
 
 #[cfg(not(feature = "rinex-crate"))]
-fn sink_crate(_w: Box<dyn Write>) -> Result<Box<dyn Sink>, Error> {
+fn sink_crate<'a>(_w: Box<dyn Write + 'a>) -> Result<Box<dyn Sink + 'a>, Error> {
     Err(Error::Rinex(NOT_COMPILED.into()))
 }

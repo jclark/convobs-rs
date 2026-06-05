@@ -5,7 +5,7 @@
 
 mod common;
 
-use common::{fixed_now, SharedBuf};
+use common::fixed_now;
 use std::fs;
 use std::path::PathBuf;
 
@@ -33,12 +33,12 @@ fn run_to_writer_converts_obsj_into_a_buffer() {
         "obsj".to_string(),
         path.to_string_lossy().into_owned(),
     ];
-    let out = SharedBuf::new();
-    convobs::run_to_writer(&args, Box::new(out.clone()), fixed_now()).expect("run_to_writer");
+    let mut out = Vec::new();
+    convobs::run_to_writer(&args, &mut out, fixed_now()).expect("run_to_writer");
 
     // The provided writer received the conversion: the metadata and the
     // observation both survive the obsj -> obsj round trip.
-    let (meta, obs) = obsj::json::read_obsj(std::io::Cursor::new(out.bytes())).unwrap();
+    let (meta, obs) = obsj::json::read_obsj(std::io::Cursor::new(out)).unwrap();
     assert_eq!(meta.marker.name, "SEAM");
     assert_eq!(obs.len(), 1);
     assert_eq!(obs[0].sat.as_str(), "G03");

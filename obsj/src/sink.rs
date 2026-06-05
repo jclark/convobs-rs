@@ -111,8 +111,9 @@ impl<S: Sink> Sink for RequireCpFilter<S> {
     }
 }
 
-/// Boxed sink used where the pipeline shape is chosen at runtime.
-impl Sink for Box<dyn Sink> {
+/// Boxed sink used where the pipeline shape is chosen at runtime. The lifetime
+/// lets the pipeline borrow a non-`'static` writer (e.g. a caller's `&mut Vec`).
+impl<'a> Sink for Box<dyn Sink + 'a> {
     fn metadata(&mut self, m: &Metadata) -> io::Result<()> {
         (**self).metadata(m)
     }

@@ -18,7 +18,7 @@
 
 mod common;
 
-use common::{fixed_now, SharedBuf};
+use common::fixed_now;
 use convobs::{ObsFormat, RinexBackend};
 use obsj::diff::{diff_metadata, diff_observations, DiffRecord, MetadataTolerances, ObsTolerances};
 use obsj::obs::Metadata;
@@ -118,8 +118,8 @@ fn run_case(c: &Case) {
         args.push("crate".to_string());
     }
     args.push(testdata(c.input));
-    let out = SharedBuf::new();
-    convobs::run_to_writer(&args, Box::new(out.clone()), fixed_now())
+    let mut out = Vec::new();
+    convobs::run_to_writer(&args, &mut out, fixed_now())
         .unwrap_or_else(|e| panic!("{}: run_to_writer: {e}", c.name));
 
     // Read the produced RINEX (via a temp file) and the committed golden (which
@@ -127,7 +127,7 @@ fn run_case(c: &Case) {
     // backend that wrote the output.
     let mut got_path = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     got_path.push(format!("{}-got.obs", c.name));
-    std::fs::write(&got_path, out.bytes()).unwrap();
+    std::fs::write(&got_path, out).unwrap();
     let backend = read_backend();
     let (got_meta, got_obs) =
         convobs::read_obs_file(got_path.to_str().unwrap(), ObsFormat::Rinex, backend)
@@ -222,14 +222,13 @@ fn obsj_path_round_trips() {
     };
 
     // UBX -> obsj.
-    let buf1 = SharedBuf::new();
+    let mut bytes1 = Vec::new();
     let args1 = vec![
         "--to".to_string(),
         "obsj".to_string(),
         testdata("m8t-20251217.ubx"),
     ];
-    convobs::run_to_writer(&args1, Box::new(buf1.clone()), fixed_now()).expect("ubx -> obsj");
-    let bytes1 = buf1.bytes();
+    convobs::run_to_writer(&args1, &mut bytes1, fixed_now()).expect("ubx -> obsj");
     let (meta1, obs1) = obsj::json::read_obsj(Cursor::new(bytes1.clone())).expect("read obsj 1");
     assert!(!obs1.is_empty(), "ubx -> obsj produced no observations");
 
@@ -237,7 +236,7 @@ fn obsj_path_round_trips() {
     let mut tmp = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     tmp.push("m8t-roundtrip.obsj");
     std::fs::write(&tmp, &bytes1).unwrap();
-    let buf2 = SharedBuf::new();
+    let mut buf2 = Vec::new();
     let args2 = vec![
         "--from".to_string(),
         "obsj".to_string(),
@@ -245,8 +244,8 @@ fn obsj_path_round_trips() {
         "obsj".to_string(),
         tmp.to_string_lossy().into_owned(),
     ];
-    convobs::run_to_writer(&args2, Box::new(buf2.clone()), fixed_now()).expect("obsj -> obsj");
-    let (meta2, obs2) = obsj::json::read_obsj(Cursor::new(buf2.bytes())).expect("read obsj 2");
+    convobs::run_to_writer(&args2, &mut buf2, fixed_now()).expect("obsj -> obsj");
+    let (meta2, obs2) = obsj::json::read_obsj(Cursor::new(buf2)).expect("read obsj 2");
 
     let diffs = diff_observations(&obs1, &obs2, exact, false);
     assert!(

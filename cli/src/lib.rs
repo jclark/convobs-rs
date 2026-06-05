@@ -100,18 +100,24 @@ pub fn run(args: &[String]) -> Result<(), Error> {
 /// ignored here; the provided writer wins, and `now` is injected for
 /// determinism — it sets the `run.date` metadata default and bounds RTCM week
 /// resolution, so the whole run is reproducible.
-pub fn run_to_writer(args: &[String], out: Box<dyn Write>, now: Instant) -> Result<(), Error> {
+pub fn run_to_writer<W: Write + ?Sized>(
+    args: &[String],
+    out: &mut W,
+    now: Instant,
+) -> Result<(), Error> {
     let cfg = match parse_args(args, now).map_err(Error::Usage)? {
         Some(c) => c,
         None => return Ok(()), // --help
     };
-    execute(&cfg, out, now)
+    // Ownership stays with the caller; the pipeline only borrows `out` for the
+    // duration of the run via a non-`'static` boxed writer.
+    execute(&cfg, Box::new(out), now)
 }
 
 /// Dispatches a parsed config to the observation- or packet-input path,
 /// threading the output writer and clock through rather than resolving them
 /// internally — so the same code drives both `run` and `run_to_writer`.
-fn execute(cfg: &Config, writer: Box<dyn Write>, now: Instant) -> Result<(), Error> {
+fn execute<'a>(cfg: &Config, writer: Box<dyn Write + 'a>, now: Instant) -> Result<(), Error> {
     match cfg.from {
         InputFormat::Rinex | InputFormat::ObsJson => convert_observation_inputs(cfg, writer),
         _ => convert_packet_inputs(cfg, writer, now),
@@ -661,9 +667,9 @@ fn open_writer(path: Option<&str>) -> Result<Box<dyn Write>, String> {
     }
 }
 
-fn build_sink(cfg: &Config, writer: Box<dyn Write>) -> Result<Box<dyn Sink>, Error> {
-    let bw: Box<dyn Write> = Box::new(BufWriter::with_capacity(256 * 1024, writer));
-    let mut sink: Box<dyn Sink> = match cfg.to {
+fn build_sink<'a>(cfg: &Config, writer: Box<dyn Write + 'a>) -> Result<Box<dyn Sink + 'a>, Error> {
+    let bw: Box<dyn Write + 'a> = Box::new(BufWriter::with_capacity(256 * 1024, writer));
+    let mut sink: Box<dyn Sink + 'a> = match cfg.to {
         OutputFormat::Rinex => rinex_sink(cfg.rinex_backend.unwrap_or(RinexBackend::Diy), bw)?,
         OutputFormat::ObsJson => Box::new(ObsJsonSink::new(bw)),
     };
@@ -731,7 +737,7 @@ fn now_instant() -> Instant {
 // Observation-file inputs (rinex / obsj)
 // ---------------------------------------------------------------------------
 
-fn convert_observation_inputs(cfg: &Config, writer: Box<dyn Write>) -> Result<(), Error> {
+fn convert_observation_inputs<'a>(cfg: &Config, writer: Box<dyn Write + 'a>) -> Result<(), Error> {
     let mut sink = build_sink(cfg, writer)?;
     for path in &cfg.inputs {
         let br: Box<dyn BufRead> = Box::new(BufReader::new(open_input(path)?));
@@ -768,12 +774,16 @@ struct WeekConstraint {
     err: Option<String>,
 }
 
-fn convert_packet_inputs(cfg: &Config, writer: Box<dyn Write>, now: Instant) -> Result<(), Error> {
+fn convert_packet_inputs<'a>(
+    cfg: &Config,
+    writer: Box<dyn Write + 'a>,
+    now: Instant,
+) -> Result<(), Error> {
     let sink = build_sink(cfg, writer)?;
     // Converters emit a per-observation loss-of-lock flag; the accumulator turns
     // it into `arc`. It sits upstream of decimation so a slip in a dropped gap
     // still surfaces on the next kept epoch.
-    let sink: Box<dyn Sink> = Box::new(LossOfLockSink::new(sink));
+    let sink: Box<dyn Sink + 'a> = Box::new(LossOfLockSink::new(sink));
     let mut driver = PacketDriver::new(cfg.from, cfg.rtcm_opts, cfg.ubx_opts, sink);
 
     if !cfg.meta.is_zero() {
@@ -969,26 +979,26 @@ enum FamilyKind {
 /// The active converter. For `raw` it starts `Pending` (holding the sink) and is
 /// resolved to a single family by the first packet seen; once resolved it does
 /// not switch (mixed UBX/RTCM raw streams are out of scope).
-enum Family {
-    Pending(Option<Box<dyn Sink>>),
-    Rtcm(rtcm::Converter<Box<dyn Sink>>),
-    Ubx(ubx::Converter<Box<dyn Sink>>),
+enum Family<'a> {
+    Pending(Option<Box<dyn Sink + 'a>>),
+    Rtcm(rtcm::Converter<Box<dyn Sink + 'a>>),
+    Ubx(ubx::Converter<Box<dyn Sink + 'a>>),
 }
 
-struct PacketDriver {
+struct PacketDriver<'a> {
     from: InputFormat,
-    family: Family,
+    family: Family<'a>,
     rtcm_opts: rtcm::Options,
     ubx_opts: ubx::Options,
     scratch: Vec<u8>,
 }
 
-impl PacketDriver {
+impl<'a> PacketDriver<'a> {
     fn new(
         from: InputFormat,
         rtcm_opts: rtcm::Options,
         ubx_opts: ubx::Options,
-        sink: Box<dyn Sink>,
+        sink: Box<dyn Sink + 'a>,
     ) -> Self {
         let family = match from {
             InputFormat::Ubx => Family::Ubx(ubx::Converter::new(sink, ubx_opts)),
@@ -1005,7 +1015,7 @@ impl PacketDriver {
     }
 
     /// Takes the pending sink, if the family is still unresolved.
-    fn take_pending(&mut self) -> Option<Box<dyn Sink>> {
+    fn take_pending(&mut self) -> Option<Box<dyn Sink + 'a>> {
         match &mut self.family {
             Family::Pending(sink) => sink.take(),
             _ => None,
@@ -1014,7 +1024,7 @@ impl PacketDriver {
 
     /// The RTCM converter, resolving a pending sink to the RTCM family on first
     /// use. Returns `None` if the stream is already locked to UBX.
-    fn use_rtcm(&mut self) -> Option<&mut rtcm::Converter<Box<dyn Sink>>> {
+    fn use_rtcm(&mut self) -> Option<&mut rtcm::Converter<Box<dyn Sink + 'a>>> {
         if let Some(sink) = self.take_pending() {
             self.family = Family::Rtcm(rtcm::Converter::new(sink, self.rtcm_opts));
         }
@@ -1026,7 +1036,7 @@ impl PacketDriver {
 
     /// The UBX converter, resolving a pending sink to the UBX family on first
     /// use. Returns `None` if the stream is already locked to RTCM.
-    fn use_ubx(&mut self) -> Option<&mut ubx::Converter<Box<dyn Sink>>> {
+    fn use_ubx(&mut self) -> Option<&mut ubx::Converter<Box<dyn Sink + 'a>>> {
         if let Some(sink) = self.take_pending() {
             self.family = Family::Ubx(ubx::Converter::new(sink, self.ubx_opts));
         }

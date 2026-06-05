@@ -31,3 +31,4 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 clap = { workspace = true }
 flate2 = { workspace = true }
+faster-hex = { workspace = true }

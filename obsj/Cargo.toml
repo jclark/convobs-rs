@@ -9,6 +9,7 @@ description = "The obsj GNSS observation format and model: serde (de)serializati
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+rustc-hash = { workspace = true }
 rtcm-rs = { workspace = true, optional = true }
 ublox = { workspace = true, optional = true }
 

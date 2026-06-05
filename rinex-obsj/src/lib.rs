@@ -16,7 +16,9 @@ use obsj::arc::{ArcToLl, LossOfLockSink};
 use obsj::obs::*;
 use obsj::sink::Sink;
 use rinex::observation::{EpochFlag, LliFlags, ObsKey, Observations, SignalObservation as XSig};
-use rinex::prelude::{Constellation, Duration, Epoch, Header, Observable, Rinex, TimeScale, Version, SV};
+use rinex::prelude::{
+    Constellation, Duration, Epoch, Header, Observable, Rinex, TimeScale, Version, SV,
+};
 use rinex::record::Record;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufReader, BufWriter, Read, Write};
@@ -37,7 +39,10 @@ impl RinexObsj for Rinex {
     }
 
     fn to_obsj(&self) -> (Metadata, Vec<SignalObservation>) {
-        (metadata_from_header(&self.header), observations_from_record(self))
+        (
+            metadata_from_header(&self.header),
+            observations_from_record(self),
+        )
     }
 }
 
@@ -131,13 +136,21 @@ fn build_rinex(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Stri
     let mut record: Record = Record::ObsRecord(BTreeMap::new());
     let signals_record = record.as_mut_obs().unwrap();
     let mut codes: HashMap<Constellation, Vec<Observable>> = HashMap::new();
-    let mut code_seen: HashMap<Constellation, std::collections::HashSet<Observable>> = HashMap::new();
+    let mut code_seen: HashMap<Constellation, std::collections::HashSet<Observable>> =
+        HashMap::new();
     let mut glo_channels: HashMap<SV, i8> = HashMap::new();
 
     for o in &sorted {
-        let sv = SV::from_str(o.sat.as_str()).map_err(|_| format!("invalid satellite {}", o.sat))?;
+        let sv =
+            SV::from_str(o.sat.as_str()).map_err(|_| format!("invalid satellite {}", o.sat))?;
         let constellation = sv.constellation;
-        let changed = arc.lli(SignalKey { sat: o.sat, sig: o.sig }, o.v.arc);
+        let changed = arc.lli(
+            SignalKey {
+                sat: o.sat,
+                sig: o.sig,
+            },
+            o.v.arc,
+        );
         let lli_bits = o.v.rinex_lli(changed);
 
         if let Some(frq) = o.v.frq {
@@ -153,8 +166,15 @@ fn build_rinex(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Stri
 
         let mut push = |typ: u8, value: f64, lli: Option<LliFlags>| {
             let obs_code = observable(typ, o.sig);
-            if code_seen.entry(constellation).or_default().insert(obs_code.clone()) {
-                codes.entry(constellation).or_default().push(obs_code.clone());
+            if code_seen
+                .entry(constellation)
+                .or_default()
+                .insert(obs_code.clone())
+            {
+                codes
+                    .entry(constellation)
+                    .or_default()
+                    .push(obs_code.clone());
             }
             entry.signals.push(XSig {
                 sv,
@@ -290,9 +310,7 @@ fn build_antenna(meta: &Metadata) -> Option<rinex::hardware::Antenna> {
 
 /// Reads a RINEX observation file into the obsj model (convenience over
 /// [`Rinex::parse`] + [`RinexObsj::to_obsj`]).
-pub fn read_observation_file<R: Read>(
-    r: R,
-) -> Result<(Metadata, Vec<SignalObservation>), String> {
+pub fn read_observation_file<R: Read>(r: R) -> Result<(Metadata, Vec<SignalObservation>), String> {
     let mut reader = BufReader::new(r);
     let rinex = Rinex::parse(&mut reader).map_err(|e| e.to_string())?;
     Ok(rinex.to_obsj())

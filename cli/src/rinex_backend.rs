@@ -48,14 +48,15 @@ pub fn open_rinex_input(
 
 fn resolve_input(explicit: Option<RinexBackend>, crinex: bool) -> Result<RinexBackend, String> {
     match explicit {
-        Some(RinexBackend::Diy) if crinex => {
-            Err("CRINEX input needs the crate RINEX backend; do not pass --rinex-backend diy".into())
-        }
+        Some(RinexBackend::Diy) if crinex => Err(
+            "CRINEX input needs the crate RINEX backend; do not pass --rinex-backend diy".into(),
+        ),
         Some(RinexBackend::Crate) if !crate_available() => Err(NOT_COMPILED.into()),
         Some(b) => Ok(b),
-        None if crinex && !crate_available() => {
-            Err("CRINEX input needs the crate RINEX backend; rebuild with --features rinex-crate".into())
-        }
+        None if crinex && !crate_available() => Err(
+            "CRINEX input needs the crate RINEX backend; rebuild with --features rinex-crate"
+                .into(),
+        ),
         None if crinex => Ok(RinexBackend::Crate),
         None => Ok(RinexBackend::Diy),
     }

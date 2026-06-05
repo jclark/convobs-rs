@@ -10,7 +10,10 @@ pub enum Error {
     /// Bad command line: unknown option, conflicting flags, invalid value.
     Usage(String),
     /// An I/O failure against a named path (or `stdin`/`stdout`).
-    Io { path: String, source: std::io::Error },
+    Io {
+        path: String,
+        source: std::io::Error,
+    },
     /// A failure parsing or converting input, with context already folded in.
     Conversion(String),
 }

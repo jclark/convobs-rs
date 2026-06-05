@@ -19,6 +19,10 @@ rinex = { version = "0.22", default-features = false, features = ["obs", "serde"
 toml = "0.8"
 clap = { version = "4", features = ["std"], default-features = false }
 flate2 = "1"
+# Fast FxHashMap for the tiny per-signal keys; SipHash is overkill here.
+rustc-hash = "2"
+# SIMD hex decoding for the packet-log hot path.
+faster-hex = "0.10"
 obsj = { path = "obsj" }
 rinex-obsj = { path = "rinex-obsj" }
 

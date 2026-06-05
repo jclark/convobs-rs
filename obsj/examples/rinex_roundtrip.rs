@@ -22,21 +22,34 @@ fn emit_obsj(path: &str, obs: &[SignalObservation]) {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let input = args.next().expect("usage: rinex_roundtrip IN.obs OUT1.obsj OUT2.obsj");
+    let input = args
+        .next()
+        .expect("usage: rinex_roundtrip IN.obs OUT1.obsj OUT2.obsj");
     let out1 = args.next().expect("missing OUT1.obsj");
     let out2 = args.next().expect("missing OUT2.obsj");
 
     let (meta, obs) = read_observation_file(BufReader::new(File::open(&input).unwrap()))
         .unwrap_or_else(|e| panic!("read {input}: {e}"));
-    let blank = obs.iter().filter(|o| o.v.cp.is_none() && o.v.arc > 0).count();
-    eprintln!("read {} observations ({} blank-phase with arc>0)", obs.len(), blank);
+    let blank = obs
+        .iter()
+        .filter(|o| o.v.cp.is_none() && o.v.arc > 0)
+        .count();
+    eprintln!(
+        "read {} observations ({} blank-phase with arc>0)",
+        obs.len(),
+        blank
+    );
     emit_obsj(&out1, &obs);
 
     let mut meta2: Metadata = meta;
     let mut buf = Vec::new();
     write_observation_file(&mut buf, &mut meta2, &obs).unwrap();
     let (_, obs2) = read_observation_file(Cursor::new(buf)).unwrap();
-    assert_eq!(obs.len(), obs2.len(), "round-trip changed the observation count");
+    assert_eq!(
+        obs.len(),
+        obs2.len(),
+        "round-trip changed the observation count"
+    );
     emit_obsj(&out2, &obs2);
     eprintln!("round-trip stable: {} observations", obs2.len());
 }

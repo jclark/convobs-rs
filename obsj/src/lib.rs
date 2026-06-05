@@ -24,7 +24,5 @@ pub mod ubx;
 
 pub use arc::{ArcToLl, LossOfLockSink};
 pub use json::{read_obsj, ObsJsonSink};
-pub use obs::{
-    GpsTime, Metadata, SatId, SigId, SignalObservation, SignalValues,
-};
+pub use obs::{GpsTime, Metadata, SatId, SigId, SignalObservation, SignalValues};
 pub use sink::Sink;

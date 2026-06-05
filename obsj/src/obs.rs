@@ -114,7 +114,9 @@ impl GpsTime {
     }
 
     pub fn from_gps_week_seconds(week: i64, tow: f64) -> GpsTime {
-        GpsTime(week * MS_PER_WEEK * 1_000_000 / TICK_NS + (tow * 1e9 / TICK_NS as f64 + 0.5) as i64)
+        GpsTime(
+            week * MS_PER_WEEK * 1_000_000 / TICK_NS + (tow * 1e9 / TICK_NS as f64 + 0.5) as i64,
+        )
     }
 
     pub fn gps_week_millis(self) -> (i64, u32) {
@@ -380,13 +382,55 @@ impl SignalValues {
 }
 
 /// One satellite-signal observation at one epoch.
-#[derive(Clone, Copy, Serialize, Deserialize)]
+///
+/// Deserialization uses serde's `flatten` to fold the `SignalValues` fields up
+/// into the record. Serialization is hand-written instead: `flatten` on the
+/// write side routes every record through serde_json's intermediate `Content`
+/// map, which dominates output time on large conversions; emitting the fields
+/// directly produces byte-identical JSON without that buffering.
+#[derive(Clone, Copy, Deserialize)]
 pub struct SignalObservation {
     pub t: GpsTime,
     pub sat: SatId,
     pub sig: SigId,
     #[serde(flatten)]
     pub v: SignalValues,
+}
+
+impl Serialize for SignalObservation {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let v = &self.v;
+        let mut m = s.serialize_map(None)?;
+        m.serialize_entry("t", &self.t)?;
+        m.serialize_entry("sat", &self.sat)?;
+        m.serialize_entry("sig", &self.sig)?;
+        if let Some(x) = v.frq {
+            m.serialize_entry("frq", &x)?;
+        }
+        if let Some(x) = v.pr {
+            m.serialize_entry("pr", &x)?;
+        }
+        if let Some(x) = v.cp {
+            m.serialize_entry("cp", &x)?;
+        }
+        if let Some(x) = v.dop {
+            m.serialize_entry("do", &x)?;
+        }
+        if let Some(x) = v.cn0 {
+            m.serialize_entry("cn0", &x)?;
+        }
+        if v.arc != 0 {
+            m.serialize_entry("arc", &v.arc)?;
+        }
+        if v.hc {
+            m.serialize_entry("hc", &true)?;
+        }
+        if v.bt {
+            m.serialize_entry("bt", &true)?;
+        }
+        m.end()
+    }
 }
 
 impl SignalObservation {
@@ -528,13 +572,25 @@ pub struct Metadata {
     pub receiver: Receiver,
     #[serde(default, skip_serializing_if = "Antenna::is_zero")]
     pub antenna: Antenna,
-    #[serde(rename = "approxPosition", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "approxPosition",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub approx_position: Option<[f64; 3]>,
-    #[serde(rename = "antennaDelta", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "antennaDelta",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub antenna_delta: Option<[f64; 3]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interval: Option<f64>,
-    #[serde(rename = "leapSeconds", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "leapSeconds",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub leap_seconds: Option<i16>,
 }
 

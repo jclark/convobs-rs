@@ -22,6 +22,10 @@ use std::time::SystemTime;
 const SECOND_NS: i64 = 1_000_000_000;
 const WEEK_SECS: i64 = 7 * 24 * 3600;
 
+/// Hex prefix of an RXM-RAWX UBX frame: sync `B5 62`, class `0x02`, id `0x15`.
+/// Used to skip non-RAWX UBX packet-log lines before hex-decoding them.
+const UBX_RAWX_HEX_PREFIX: &[u8] = b"b5620215";
+
 #[derive(Clone, Copy, PartialEq)]
 enum InputFormat {
     Raw,
@@ -33,7 +37,10 @@ enum InputFormat {
 
 impl InputFormat {
     fn packet_input(self) -> bool {
-        matches!(self, InputFormat::Raw | InputFormat::Ubx | InputFormat::Rtcm)
+        matches!(
+            self,
+            InputFormat::Raw | InputFormat::Ubx | InputFormat::Rtcm
+        )
     }
     fn may_use_rtcm(self) -> bool {
         matches!(self, InputFormat::Raw | InputFormat::Rtcm)
@@ -134,29 +141,81 @@ fn build_command() -> clap::Command {
     Command::new("convobs")
         .no_binary_name(true)
         .disable_help_flag(true)
-        .arg(Arg::new("help").short('h').long("help").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("help")
+                .short('h')
+                .long("help")
+                .action(ArgAction::SetTrue),
+        )
         .arg(Arg::new("output").short('o').long("output"))
-        .arg(Arg::new("from").short('r').long("from").default_value("raw"))
-        .arg(Arg::new("packet-log").long("packet-log").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("from")
+                .short('r')
+                .long("from")
+                .default_value("raw"),
+        )
+        .arg(
+            Arg::new("packet-log")
+                .long("packet-log")
+                .action(ArgAction::SetTrue),
+        )
         .arg(Arg::new("to").long("to").default_value("rinex"))
-        .arg(Arg::new("rinex-backend").long("rinex-backend").default_value("auto"))
+        .arg(
+            Arg::new("rinex-backend")
+                .long("rinex-backend")
+                .default_value("auto"),
+        )
         .arg(Arg::new("date").long("date"))
         .arg(Arg::new("recent").long("recent").action(ArgAction::SetTrue))
-        .arg(Arg::new("date-from-filename").short('f').long("date-from-filename").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("date-from-filename")
+                .short('f')
+                .long("date-from-filename")
+                .action(ArgAction::SetTrue),
+        )
         .arg(Arg::new("interval").long("interval").default_value("0"))
-        .arg(Arg::new("ppp-ar").short('p').long("ppp-ar").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("ppp-ar")
+                .short('p')
+                .long("ppp-ar")
+                .action(ArgAction::SetTrue),
+        )
         .arg(Arg::new("header-file").short('H').long("header-file"))
         .arg(Arg::new("rinex-version").long("rinex-version"))
         .arg(Arg::new("program").long("program"))
         .arg(Arg::new("run-by").long("run-by"))
         .arg(Arg::new("antenna").long("antenna"))
         .arg(Arg::new("approx-pos").long("approx-pos"))
-        .arg(Arg::new("comment").long("comment").action(ArgAction::Append))
-        .arg(Arg::new("rtcm-strict-prr").long("rtcm-strict-prr").action(ArgAction::SetTrue))
-        .arg(Arg::new("rtcm-omit-zero-do").long("rtcm-omit-zero-do").action(ArgAction::SetTrue))
-        .arg(Arg::new("ubx-slip-threshold").long("ubx-slip-threshold").default_value("15"))
-        .arg(Arg::new("ubx-bds-geo-half-cycle").long("ubx-bds-geo-half-cycle").action(ArgAction::SetTrue))
-        .arg(Arg::new("unc-omit-do-without-cp").long("unc-omit-do-without-cp").action(ArgAction::SetTrue))
+        .arg(
+            Arg::new("comment")
+                .long("comment")
+                .action(ArgAction::Append),
+        )
+        .arg(
+            Arg::new("rtcm-strict-prr")
+                .long("rtcm-strict-prr")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("rtcm-omit-zero-do")
+                .long("rtcm-omit-zero-do")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("ubx-slip-threshold")
+                .long("ubx-slip-threshold")
+                .default_value("15"),
+        )
+        .arg(
+            Arg::new("ubx-bds-geo-half-cycle")
+                .long("ubx-bds-geo-half-cycle")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("unc-omit-do-without-cp")
+                .long("unc-omit-do-without-cp")
+                .action(ArgAction::SetTrue),
+        )
         .arg(Arg::new("inputs").action(ArgAction::Append).num_args(0..))
 }
 
@@ -189,12 +248,17 @@ fn parse_args(args: &[String]) -> Result<Option<Config>, String> {
         return Err("--packet-log is valid only with packet input formats".to_string());
     }
 
-    let date = m.get_one::<String>("date").map(String::as_str).unwrap_or("");
+    let date = m
+        .get_one::<String>("date")
+        .map(String::as_str)
+        .unwrap_or("");
     let recent = m.get_flag("recent");
     let date_from_filename = m.get_flag("date-from-filename");
     let n = (!date.is_empty()) as u8 + recent as u8 + date_from_filename as u8;
     if n > 1 {
-        return Err("--date, --recent, and --date-from-filename are mutually exclusive".to_string());
+        return Err(
+            "--date, --recent, and --date-from-filename are mutually exclusive".to_string(),
+        );
     }
     let mut week_mode = WeekMode::Auto;
     let mut week_date = Instant { secs: 0, nanos: 0 };
@@ -208,10 +272,16 @@ fn parse_args(args: &[String]) -> Result<Option<Config>, String> {
     }
 
     if packet_log && week_mode != WeekMode::Auto {
-        return Err("--date, --recent, and --date-from-filename are not valid with --packet-log".to_string());
+        return Err(
+            "--date, --recent, and --date-from-filename are not valid with --packet-log"
+                .to_string(),
+        );
     }
     if week_mode != WeekMode::Auto && !from.may_use_rtcm() {
-        return Err("--date, --recent, and --date-from-filename are valid only with raw or RTCM input".to_string());
+        return Err(
+            "--date, --recent, and --date-from-filename are valid only with raw or RTCM input"
+                .to_string(),
+        );
     }
 
     let strict_prr = m.get_flag("rtcm-strict-prr");
@@ -226,7 +296,9 @@ fn parse_args(args: &[String]) -> Result<Option<Config>, String> {
         return Err("--ubx-slip-threshold is valid only with raw or UBX input".to_string());
     }
     if m.get_flag("unc-omit-do-without-cp") && !matches!(from, InputFormat::Raw) {
-        return Err("--unc-omit-do-without-cp is valid only with raw, UNCB, or UNCA input".to_string());
+        return Err(
+            "--unc-omit-do-without-cp is valid only with raw, UNCB, or UNCA input".to_string(),
+        );
     }
     if changed("ubx-bds-geo-half-cycle") && !from.may_use_ubx() {
         return Err("--ubx-bds-geo-half-cycle is valid only with raw or UBX input".to_string());
@@ -408,7 +480,10 @@ fn apply_metadata_flags(
 fn parse_xyz(s: &str, opt: &str) -> Result<[f64; 3], String> {
     let parts: Vec<&str> = s.split(',').collect();
     if parts.len() != 3 {
-        return Err(format!("{} must contain three comma-separated numbers", opt));
+        return Err(format!(
+            "{} must contain three comma-separated numbers",
+            opt
+        ));
     }
     let mut out = [0.0; 3];
     for (i, p) in parts.iter().enumerate() {
@@ -550,9 +625,7 @@ fn open_writer(path: Option<&str>) -> Result<Box<dyn Write>, String> {
 fn build_sink(cfg: &Config, writer: Box<dyn Write>) -> Result<Box<dyn Sink>, String> {
     let bw: Box<dyn Write> = Box::new(BufWriter::with_capacity(256 * 1024, writer));
     let mut sink: Box<dyn Sink> = match cfg.to {
-        OutputFormat::Rinex => {
-            rinex_sink(cfg.rinex_backend.unwrap_or(RinexBackend::Diy), bw)?
-        }
+        OutputFormat::Rinex => rinex_sink(cfg.rinex_backend.unwrap_or(RinexBackend::Diy), bw)?,
         OutputFormat::ObsJson => Box::new(ObsJsonSink::new(bw)),
     };
     if cfg.interval_ns != 0 {
@@ -703,7 +776,8 @@ fn no_observation_msg(from: InputFormat) -> String {
         InputFormat::Ubx => "no UBX-RXM-RAWX messages found".to_string(),
         InputFormat::Rtcm => "no RTCM MSM7 messages found".to_string(),
         InputFormat::Raw => {
-            "no raw observation packets found (UBX RAWX, RTCM MSM7, UNCB OBSVM, UNCA OBSVMA)".to_string()
+            "no raw observation packets found (UBX RAWX, RTCM MSM7, UNCB OBSVM, UNCA OBSVMA)"
+                .to_string()
         }
         _ => "no observations found".to_string(),
     }
@@ -714,7 +788,11 @@ fn file_modtime(path: &str) -> Option<Instant> {
         return None;
     }
     let meta = std::fs::metadata(path).ok()?;
-    let d = meta.modified().ok()?.duration_since(SystemTime::UNIX_EPOCH).ok()?;
+    let d = meta
+        .modified()
+        .ok()?
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .ok()?;
     Some(Instant {
         secs: d.as_secs() as i64,
         nanos: d.subsec_nanos(),
@@ -823,7 +901,10 @@ fn date_from_filename(path: &str) -> Result<Instant, String> {
     match dates.len() {
         0 => Err(format!("no date found in filename {:?}", path)),
         1 => Ok(dates[0].3),
-        _ => Err(format!("multiple conflicting dates found in filename {:?}", path)),
+        _ => Err(format!(
+            "multiple conflicting dates found in filename {:?}",
+            path
+        )),
     }
 }
 
@@ -980,6 +1061,19 @@ impl PacketDriver {
             if !self.tag_matches(tag) {
                 continue;
             }
+            // Most UBX traffic is not RXM-RAWX; recognise it from the frame
+            // header in the hex (class 0x02, id 0x15) and skip the rest before
+            // even hex-decoding the payload.
+            if tag == "UBX" {
+                if let Some(hex) = bin {
+                    let n = UBX_RAWX_HEX_PREFIX.len();
+                    if !(hex.len() >= n
+                        && hex.as_bytes()[..n].eq_ignore_ascii_case(UBX_RAWX_HEX_PREFIX))
+                    {
+                        continue;
+                    }
+                }
+            }
 
             let week = if tag == "RTCM" {
                 let t = entry
@@ -987,7 +1081,10 @@ impl PacketDriver {
                     .as_deref()
                     .and_then(obsj::json::parse_rfc3339_public)
                     .ok_or_else(|| {
-                        format!("packet log line {}: RTCM packet log line {} has no timestamp", line_no, line_no)
+                        format!(
+                            "packet log line {}: RTCM packet log line {} has no timestamp",
+                            line_no, line_no
+                        )
                     })?;
                 packet_log_week_constraint(t)
             } else {
@@ -1013,7 +1110,11 @@ impl PacketDriver {
         Ok(count)
     }
 
-    fn convert_packet_stream(&mut self, r: Box<dyn Read>, wc: &WeekConstraint) -> Result<u64, String> {
+    fn convert_packet_stream(
+        &mut self,
+        r: Box<dyn Read>,
+        wc: &WeekConstraint,
+    ) -> Result<u64, String> {
         let mut data = Vec::new();
         BufReader::new(r)
             .read_to_end(&mut data)
@@ -1052,8 +1153,13 @@ impl PacketDriver {
             } else {
                 (TimeInterval::default(), false)
             };
-            c.convert_frame(frame, interval)
-                .map_err(|e| if wrap { format!("{}{}", wc.errf, e) } else { e })?;
+            c.convert_frame(frame, interval).map_err(|e| {
+                if wrap {
+                    format!("{}{}", wc.errf, e)
+                } else {
+                    e
+                }
+            })?;
             if is7 {
                 count += 1;
             }
@@ -1063,26 +1169,33 @@ impl PacketDriver {
 
     /// Converts the frames inside one packet-log payload. `week` (with its errf
     /// wrap baked in by the caller) constrains RTCM epoch resolution.
-    fn convert_payload(&mut self, tag: &str, payload: &[u8], week: TimeInterval) -> Result<bool, String> {
+    fn convert_payload(
+        &mut self,
+        tag: &str,
+        payload: &[u8],
+        week: TimeInterval,
+    ) -> Result<bool, String> {
         let mut produced = false;
         match tag {
             "RTCM" => {
                 if let Some(c) = self.use_rtcm() {
-                    for frame in rtcm::frames(payload) {
-                        let is7 = rtcm::is_msm7_frame(frame);
-                        c.convert_frame(frame, week).map_err(|e| {
-                            format!("RTCM epoch does not match packet-log timestamp: {}", e)
-                        })?;
-                        if is7 {
-                            produced = true;
-                        }
-                    }
+                    // A packet-log RTCM payload is a single framed message;
+                    // convert it directly instead of re-scanning and re-checking
+                    // the CRC via frames().
+                    produced = rtcm::is_msm7_frame(payload);
+                    c.convert_frame(payload, week).map_err(|e| {
+                        format!("RTCM epoch does not match packet-log timestamp: {}", e)
+                    })?;
                 }
             }
             "UBX" => {
-                if let Some(c) = self.use_ubx() {
-                    if c.convert_chunk(payload)? > 0 {
-                        produced = true;
+                // Each packet-log payload is one UBX frame; most are not
+                // RXM-RAWX, so skip those without a full decode.
+                if ubx::is_rawx_frame(payload) {
+                    if let Some(c) = self.use_ubx() {
+                        if c.convert_chunk(payload)? > 0 {
+                            produced = true;
+                        }
                     }
                 }
             }
@@ -1095,7 +1208,11 @@ impl PacketDriver {
 /// Picks the family for a `raw` stream from whichever valid frame appears first.
 fn detect_raw_family(data: &[u8]) -> Option<FamilyKind> {
     match (rtcm::first_frame_pos(data), ubx::first_frame_pos(data)) {
-        (Some(r), Some(u)) => Some(if r <= u { FamilyKind::Rtcm } else { FamilyKind::Ubx }),
+        (Some(r), Some(u)) => Some(if r <= u {
+            FamilyKind::Rtcm
+        } else {
+            FamilyKind::Ubx
+        }),
         (Some(_), None) => Some(FamilyKind::Rtcm),
         (None, Some(_)) => Some(FamilyKind::Ubx),
         (None, None) => None,

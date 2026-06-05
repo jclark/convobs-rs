@@ -17,6 +17,7 @@ use crate::freq::signal_frequency_hz;
 use crate::obs::*;
 use crate::sink::Sink;
 use rtcm_rs::prelude::{next_msg_frame, Message, MessageFrame};
+use rustc_hash::FxHashMap;
 
 const SPEED_OF_LIGHT: f64 = 299792458.0;
 const RANGE_MS: f64 = SPEED_OF_LIGHT * 0.001;
@@ -172,9 +173,9 @@ pub struct Converter<S: Sink> {
     opts: Options,
     week: TimeInterval,
     leap_ms: i64,
-    time: std::collections::HashMap<Gnss, GpsTime>,
-    lock: std::collections::HashMap<SignalKey, u16>,
-    slip: std::collections::HashMap<SignalKey, bool>,
+    time: FxHashMap<Gnss, GpsTime>,
+    lock: FxHashMap<SignalKey, u16>,
+    slip: FxHashMap<SignalKey, bool>,
 }
 
 impl<S: Sink> Converter<S> {
@@ -184,9 +185,9 @@ impl<S: Sink> Converter<S> {
             opts,
             week: TimeInterval::default(),
             leap_ms: DEFAULT_GPS_UTC_MS,
-            time: std::collections::HashMap::new(),
-            lock: std::collections::HashMap::new(),
-            slip: std::collections::HashMap::new(),
+            time: FxHashMap::default(),
+            lock: FxHashMap::default(),
+            slip: FxHashMap::default(),
         }
     }
 
@@ -345,7 +346,13 @@ impl<S: Sink> Converter<S> {
         Ok(seen)
     }
 
-    fn convert_cell(&mut self, t: GpsTime, gnss: Gnss, sat: &SatData, sig: &SigData) -> Result<bool, String> {
+    fn convert_cell(
+        &mut self,
+        t: GpsTime,
+        gnss: Gnss,
+        sat: &SatData,
+        sig: &SigData,
+    ) -> Result<bool, String> {
         let sys = gnss.rinex_sys();
         let sat_num = rinex_sat_num(gnss, sat.satellite_id);
         if sat_num == 0 {
@@ -378,7 +385,12 @@ impl<S: Sink> Converter<S> {
         if let Some(cp) = carrier_phase(rough, sig.phase_range, freq) {
             o.v.cp = Some(cp);
         }
-        if let Some(dop) = doppler(sat.phase_rate, sig.phase_rate, freq, self.opts.use_spec_phase_range_rate_sign) {
+        if let Some(dop) = doppler(
+            sat.phase_rate,
+            sig.phase_rate,
+            freq,
+            self.opts.use_spec_phase_range_rate_sign,
+        ) {
             if !self.opts.omit_zero_do || dop != 0.0 {
                 o.v.dop = Some(dop);
             }
@@ -416,7 +428,12 @@ impl<S: Sink> Converter<S> {
         (ll, s.half_cycle)
     }
 
-    fn resolve_time(&self, epoch_time: u32, gnss: Gnss, week: TimeInterval) -> Result<GpsTime, String> {
+    fn resolve_time(
+        &self,
+        epoch_time: u32,
+        gnss: Gnss,
+        week: TimeInterval,
+    ) -> Result<GpsTime, String> {
         let offsets = self.epoch_week_offsets(epoch_time, gnss)?;
         if !week.is_zero() {
             return resolve_week(&offsets, week);
@@ -456,7 +473,9 @@ impl<S: Sink> Converter<S> {
             return Err(format!("invalid GLONASS time of day {}", tod));
         }
         if day != 7 {
-            return Ok(vec![day * DAY_MS + tod - GLONASS_UTC_OFFSET_MS + self.leap_ms]);
+            return Ok(vec![
+                day * DAY_MS + tod - GLONASS_UTC_OFFSET_MS + self.leap_ms,
+            ]);
         }
         Ok((0..7)
             .map(|d| d * DAY_MS + tod - GLONASS_UTC_OFFSET_MS + self.leap_ms)
@@ -514,7 +533,12 @@ fn carrier_phase(rough: Option<f64>, fine: Option<f64>, freq: Option<f64>) -> Op
     Some((rough? + fine? * RANGE_MS) * freq / SPEED_OF_LIGHT)
 }
 
-fn doppler(rough: Option<i16>, fine: Option<f64>, freq: Option<f64>, spec_sign: bool) -> Option<f64> {
+fn doppler(
+    rough: Option<i16>,
+    fine: Option<f64>,
+    freq: Option<f64>,
+    spec_sign: bool,
+) -> Option<f64> {
     let freq = freq?;
     let mut prr = rough? as f64 + fine?;
     if spec_sign {

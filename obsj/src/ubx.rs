@@ -12,7 +12,7 @@
 
 use crate::obs::*;
 use crate::sink::Sink;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use ublox::proto23::PacketRef;
 use ublox::{Parser, UbxPacket};
 
@@ -69,7 +69,7 @@ struct Rawx {
 pub struct Converter<S: Sink> {
     opts: Options,
     sink: S,
-    state: HashMap<SignalKey, SignalState>,
+    state: FxHashMap<SignalKey, SignalState>,
     parser: Parser<Vec<u8>>,
 }
 
@@ -81,7 +81,7 @@ impl<S: Sink> Converter<S> {
         Converter {
             opts,
             sink,
-            state: HashMap::new(),
+            state: FxHashMap::default(),
             parser: Parser::default_proto(),
         }
     }
@@ -243,6 +243,13 @@ fn half_cycle_unresolved(meas: &Meas) -> bool {
     } else {
         meas.trk_stat & HALF_CYC == 0
     }
+}
+
+/// Whether a single UBX frame is an RXM-RAWX message (class 0x02, id 0x15),
+/// from its header bytes only. Lets the packet-log path skip the ~90% of UBX
+/// traffic that is other messages without paying for a full decode.
+pub fn is_rawx_frame(frame: &[u8]) -> bool {
+    frame.len() >= 4 && frame[0] == 0xB5 && frame[1] == 0x62 && frame[2] == 0x02 && frame[3] == 0x15
 }
 
 /// The UBX 8-bit Fletcher checksum over class+id+len+payload.

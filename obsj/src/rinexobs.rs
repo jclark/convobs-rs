@@ -142,7 +142,13 @@ fn build_obs_file(obs: &[SignalObservation]) -> Result<ObsFile, String> {
         if let Some(v) = o.v.frq {
             frq.insert(o.sat, v);
         }
-        let changed = arc.lli(SignalKey { sat: o.sat, sig: o.sig }, o.v.arc);
+        let changed = arc.lli(
+            SignalKey {
+                sat: o.sat,
+                sig: o.sig,
+            },
+            o.v.arc,
+        );
         let dst = e.obs.get_mut(&o.sat).unwrap();
         add_signal_observation(dst, o, changed);
         add_writer_codes(&mut seen_codes, &mut seen_code_set, o, changed);
@@ -201,7 +207,11 @@ fn add_writer_codes(
     }
 }
 
-fn add_signal_observation(dst: &mut HashMap<ObsCode, ObsField>, o: &SignalObservation, arc_changed: bool) {
+fn add_signal_observation(
+    dst: &mut HashMap<ObsCode, ObsField>,
+    o: &SignalObservation,
+    arc_changed: bool,
+) {
     if let Some(pr) = o.v.pr {
         add_obs_field(dst, o.sig.code(TYPE_CODE), Some(pr), 0);
     }
@@ -228,7 +238,11 @@ fn add_obs_field(dst: &mut HashMap<ObsCode, ObsField>, code: ObsCode, val: Optio
 fn write_header(out: &mut String, meta: &Metadata, f: &ObsFile) {
     let sys = header_system(&f.codes);
     let mut line = String::new();
-    let _ = write!(line, "{:>9.9}           OBSERVATION DATA    {:<20.20}", meta.version, sys);
+    let _ = write!(
+        line,
+        "{:>9.9}           OBSERVATION DATA    {:<20.20}",
+        meta.version, sys
+    );
     header_line(out, &line, "RINEX VERSION / TYPE");
 
     let date = match meta.run.date {
@@ -236,7 +250,11 @@ fn write_header(out: &mut String, meta: &Metadata, f: &ObsFile) {
         None => String::new(),
     };
     line.clear();
-    let _ = write!(line, "{:<20.20}{:<20.20}{:<20.20}", meta.run.program, meta.run.by, date);
+    let _ = write!(
+        line,
+        "{:<20.20}{:<20.20}{:<20.20}",
+        meta.run.program, meta.run.by, date
+    );
     header_line(out, &line, "PGM / RUN BY / DATE");
 
     for c in &meta.comment {
@@ -256,7 +274,11 @@ fn write_header(out: &mut String, meta: &Metadata, f: &ObsFile) {
     );
     header_line(out, &line, "REC # / TYPE / VERS");
     line.clear();
-    let _ = write!(line, "{:<20.20}{:<20.20}", meta.antenna.number, meta.antenna.type_);
+    let _ = write!(
+        line,
+        "{:<20.20}{:<20.20}",
+        meta.antenna.number, meta.antenna.type_
+    );
     header_line(out, &line, "ANT # / TYPE");
 
     let pos = meta.approx_position.unwrap_or([0.0; 3]);
@@ -282,7 +304,11 @@ fn write_header(out: &mut String, meta: &Metadata, f: &ObsFile) {
         write_glonass_freq(out, &f.frq);
     }
     if f.codes.get(&b'R').map_or(false, |c| !c.is_empty()) {
-        header_line(out, " C1C    0.000 C1P    0.000 C2C    0.000 C2P    0.000", "GLONASS COD/PHS/BIS");
+        header_line(
+            out,
+            " C1C    0.000 C1P    0.000 C2C    0.000 C2P    0.000",
+            "GLONASS COD/PHS/BIS",
+        );
     }
     if let Some(ls) = meta.leap_seconds {
         line.clear();
@@ -293,7 +319,11 @@ fn write_header(out: &mut String, meta: &Metadata, f: &ObsFile) {
 }
 
 fn header_line(out: &mut String, content: &str, label: &str) {
-    let content = if content.len() > 60 { &content[..60] } else { content };
+    let content = if content.len() > 60 {
+        &content[..60]
+    } else {
+        content
+    };
     let _ = write!(out, "{:<60}{:<20}\n", content, label);
 }
 
@@ -444,7 +474,11 @@ fn write_epochs<W: Write>(w: &mut W, line: &mut String, f: &ObsFile) -> io::Resu
 }
 
 fn append_obs_field(line: &mut String, field: &ObsField) {
-    let lli = if field.lli != 0 { (b'0' + field.lli) as char } else { ' ' };
+    let lli = if field.lli != 0 {
+        (b'0' + field.lli) as char
+    } else {
+        ' '
+    };
     let mut text = String::new();
     if let Some(v) = field.val {
         let _ = write!(text, "{:.3}", v);
@@ -545,12 +579,18 @@ struct LineReader<R: BufRead> {
 
 impl<R: BufRead> LineReader<R> {
     fn new(r: R) -> Self {
-        LineReader { r, buf: Vec::with_capacity(256) }
+        LineReader {
+            r,
+            buf: Vec::with_capacity(256),
+        }
     }
     /// Returns the next line (without trailing \r\n), or None at EOF.
     fn next_line(&mut self) -> Result<Option<String>, String> {
         self.buf.clear();
-        let n = self.r.read_until(b'\n', &mut self.buf).map_err(|e| e.to_string())?;
+        let n = self
+            .r
+            .read_until(b'\n', &mut self.buf)
+            .map_err(|e| e.to_string())?;
         if n == 0 {
             return Ok(None);
         }
@@ -599,7 +639,9 @@ fn read_header<R: BufRead>(lines: &mut LineReader<R>) -> Result<ObsHeader, Strin
                 h.meta.run.date = parse_run_date(&content[40..60]);
             }
             "COMMENT" => {
-                h.meta.comment.push(content.trim_end_matches(' ').to_string());
+                h.meta
+                    .comment
+                    .push(content.trim_end_matches(' ').to_string());
             }
             "MARKER NAME" => h.meta.marker.name = content.trim().to_string(),
             "MARKER NUMBER" => h.meta.marker.number = content.trim().to_string(),
@@ -793,7 +835,10 @@ fn read_obs_types_header(
         if code.len() != 3 {
             return Err(format!("rinex: invalid observation code {:?}", fields[i]));
         }
-        codes.entry(sys).or_default().push(ObsCode([code[0], code[1], code[2]]));
+        codes
+            .entry(sys)
+            .or_default()
+            .push(ObsCode([code[0], code[1], code[2]]));
         i += 1;
     }
     Ok(sys)
@@ -808,7 +853,10 @@ fn read_signal_strength_unit(content: &str) -> Result<(), String> {
     if unit == "DBHZ" || unit == "DB-HZ" {
         Ok(())
     } else {
-        Err(format!("rinex: unsupported signal strength unit {:?}", field))
+        Err(format!(
+            "rinex: unsupported signal strength unit {:?}",
+            field
+        ))
     }
 }
 
@@ -882,7 +930,10 @@ fn parse_epoch_line(line: &str) -> Result<(i32, usize, GpsTime), String> {
     let flag = parse_epoch_int(line[31..32].trim(), "flag")?;
     let n = parse_epoch_int(line[32..35].trim(), "record count")?;
     if n < 0 {
-        return Err(format!("rinex: invalid epoch record count {:?}", line[32..35].trim()));
+        return Err(format!(
+            "rinex: invalid epoch record count {:?}",
+            line[32..35].trim()
+        ));
     }
     let mut t = GpsTime(0);
     if flag == 0 || flag == 1 {
@@ -902,7 +953,8 @@ fn parse_epoch_int(s: &str, name: &str) -> Result<i32, String> {
     if s.is_empty() {
         return Err(format!("rinex: missing epoch {}", name));
     }
-    s.parse().map_err(|_| format!("rinex: invalid epoch {} {:?}", name, s))
+    s.parse()
+        .map_err(|_| format!("rinex: invalid epoch {} {:?}", name, s))
 }
 
 fn parse_rinex_time(
@@ -913,11 +965,21 @@ fn parse_rinex_time(
     minute: &str,
     second: &str,
 ) -> Result<GpsTime, String> {
-    let y: i64 = year.parse().map_err(|_| format!("rinex: invalid year {:?}", year))?;
-    let mo: u32 = month.parse().map_err(|_| format!("rinex: invalid month {:?}", month))?;
-    let d: u32 = day.parse().map_err(|_| format!("rinex: invalid day {:?}", day))?;
-    let h: u32 = hour.parse().map_err(|_| format!("rinex: invalid hour {:?}", hour))?;
-    let m: u32 = minute.parse().map_err(|_| format!("rinex: invalid minute {:?}", minute))?;
+    let y: i64 = year
+        .parse()
+        .map_err(|_| format!("rinex: invalid year {:?}", year))?;
+    let mo: u32 = month
+        .parse()
+        .map_err(|_| format!("rinex: invalid month {:?}", month))?;
+    let d: u32 = day
+        .parse()
+        .map_err(|_| format!("rinex: invalid day {:?}", day))?;
+    let h: u32 = hour
+        .parse()
+        .map_err(|_| format!("rinex: invalid hour {:?}", hour))?;
+    let m: u32 = minute
+        .parse()
+        .map_err(|_| format!("rinex: invalid minute {:?}", minute))?;
     let (sec_text, frac_text) = match second.split_once('.') {
         Some((a, b)) => (a, b.to_string()),
         None => (second, String::new()),

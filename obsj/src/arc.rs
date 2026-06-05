@@ -10,7 +10,7 @@
 
 use crate::obs::{SignalKey, SignalObservation};
 use crate::sink::Sink;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap;
 use std::io;
 
 /// Streaming converter stage: turns the per-observation loss-of-lock flag
@@ -21,14 +21,14 @@ use std::io;
 /// dropped gap still bumps `arc` and therefore surfaces on the next kept epoch.
 pub struct LossOfLockSink<S: Sink> {
     sink: S,
-    arc: HashMap<SignalKey, u32>,
+    arc: FxHashMap<SignalKey, u32>,
 }
 
 impl<S: Sink> LossOfLockSink<S> {
     pub fn new(sink: S) -> Self {
         LossOfLockSink {
             sink,
-            arc: HashMap::new(),
+            arc: FxHashMap::default(),
         }
     }
 
@@ -45,7 +45,13 @@ impl<S: Sink> Sink for LossOfLockSink<S> {
 
     fn observation(&mut self, o: &SignalObservation) -> io::Result<()> {
         let mut o = *o;
-        let counter = self.arc.entry(SignalKey { sat: o.sat, sig: o.sig }).or_insert(0);
+        let counter = self
+            .arc
+            .entry(SignalKey {
+                sat: o.sat,
+                sig: o.sig,
+            })
+            .or_insert(0);
         if o.v.ll {
             *counter += 1;
         }
@@ -66,7 +72,7 @@ impl<S: Sink> Sink for LossOfLockSink<S> {
 /// transform exposes both as methods over one shared per-signal map.
 #[derive(Default)]
 pub struct ArcToLl {
-    prev: HashMap<SignalKey, u32>,
+    prev: FxHashMap<SignalKey, u32>,
 }
 
 impl ArcToLl {

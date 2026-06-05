@@ -167,16 +167,21 @@ fn compare_at(
     bi: &ObsIndex,
     tol: ObsTolerances,
 ) -> (Option<SignalDiff>, Option<SignalDiff>) {
-    let av = ai.epochs.get(&t).and_then(|m| m.get(&k)).map(|&i| &ai.obs[i].v);
-    let bv = bi.epochs.get(&t).and_then(|m| m.get(&k)).map(|&i| &bi.obs[i].v);
+    let av = ai
+        .epochs
+        .get(&t)
+        .and_then(|m| m.get(&k))
+        .map(|&i| &ai.obs[i].v);
+    let bv = bi
+        .epochs
+        .get(&t)
+        .and_then(|m| m.get(&k))
+        .map(|&i| &bi.obs[i].v);
     diff_signal(av, bv, tol)
 }
 
 fn values_as_diff(v: &SignalValues) -> SignalDiff {
-    let mut d = SignalDiff {
-        v: *v,
-        ll: false,
-    };
+    let mut d = SignalDiff { v: *v, ll: false };
     d.v.arc = 0;
     d
 }
@@ -258,21 +263,78 @@ pub fn diff_metadata(
     let mut bo = Metadata::default();
     cmp_str(&mut ao.version, &mut bo.version, &a.version, &b.version);
     if !ignore_marker {
-        cmp_str(&mut ao.marker.name, &mut bo.marker.name, &a.marker.name, &b.marker.name);
-        cmp_str(&mut ao.marker.number, &mut bo.marker.number, &a.marker.number, &b.marker.number);
-        cmp_str(&mut ao.marker.type_, &mut bo.marker.type_, &a.marker.type_, &b.marker.type_);
+        cmp_str(
+            &mut ao.marker.name,
+            &mut bo.marker.name,
+            &a.marker.name,
+            &b.marker.name,
+        );
+        cmp_str(
+            &mut ao.marker.number,
+            &mut bo.marker.number,
+            &a.marker.number,
+            &b.marker.number,
+        );
+        cmp_str(
+            &mut ao.marker.type_,
+            &mut bo.marker.type_,
+            &a.marker.type_,
+            &b.marker.type_,
+        );
     }
     cmp_str(&mut ao.observer, &mut bo.observer, &a.observer, &b.observer);
     cmp_str(&mut ao.agency, &mut bo.agency, &a.agency, &b.agency);
-    cmp_str(&mut ao.receiver.number, &mut bo.receiver.number, &a.receiver.number, &b.receiver.number);
-    cmp_str(&mut ao.receiver.type_, &mut bo.receiver.type_, &a.receiver.type_, &b.receiver.type_);
-    cmp_str(&mut ao.receiver.version, &mut bo.receiver.version, &a.receiver.version, &b.receiver.version);
-    cmp_str(&mut ao.antenna.number, &mut bo.antenna.number, &a.antenna.number, &b.antenna.number);
-    cmp_str(&mut ao.antenna.type_, &mut bo.antenna.type_, &a.antenna.type_, &b.antenna.type_);
-    cmp_triple(&mut ao.approx_position, &mut bo.approx_position, a.approx_position, b.approx_position, tol.approx_pos);
-    cmp_triple(&mut ao.antenna_delta, &mut bo.antenna_delta, a.antenna_delta, b.antenna_delta, tol.antenna_delta);
+    cmp_str(
+        &mut ao.receiver.number,
+        &mut bo.receiver.number,
+        &a.receiver.number,
+        &b.receiver.number,
+    );
+    cmp_str(
+        &mut ao.receiver.type_,
+        &mut bo.receiver.type_,
+        &a.receiver.type_,
+        &b.receiver.type_,
+    );
+    cmp_str(
+        &mut ao.receiver.version,
+        &mut bo.receiver.version,
+        &a.receiver.version,
+        &b.receiver.version,
+    );
+    cmp_str(
+        &mut ao.antenna.number,
+        &mut bo.antenna.number,
+        &a.antenna.number,
+        &b.antenna.number,
+    );
+    cmp_str(
+        &mut ao.antenna.type_,
+        &mut bo.antenna.type_,
+        &a.antenna.type_,
+        &b.antenna.type_,
+    );
+    cmp_triple(
+        &mut ao.approx_position,
+        &mut bo.approx_position,
+        a.approx_position,
+        b.approx_position,
+        tol.approx_pos,
+    );
+    cmp_triple(
+        &mut ao.antenna_delta,
+        &mut bo.antenna_delta,
+        a.antenna_delta,
+        b.antenna_delta,
+        tol.antenna_delta,
+    );
     cmp_opt(&mut ao.interval, &mut bo.interval, a.interval, b.interval);
-    cmp_opt(&mut ao.leap_seconds, &mut bo.leap_seconds, a.leap_seconds, b.leap_seconds);
+    cmp_opt(
+        &mut ao.leap_seconds,
+        &mut bo.leap_seconds,
+        a.leap_seconds,
+        b.leap_seconds,
+    );
     (ao, bo)
 }
 
@@ -283,7 +345,12 @@ fn cmp_str(a: &mut String, b: &mut String, av: &str, bv: &str) {
     }
 }
 
-fn cmp_opt<T: PartialEq + Copy>(a: &mut Option<T>, b: &mut Option<T>, av: Option<T>, bv: Option<T>) {
+fn cmp_opt<T: PartialEq + Copy>(
+    a: &mut Option<T>,
+    b: &mut Option<T>,
+    av: Option<T>,
+    bv: Option<T>,
+) {
     if av != bv {
         *a = av;
         *b = bv;

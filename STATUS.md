@@ -64,18 +64,23 @@ recovering the raw integers from the crates' pre-scaled fields.
 
 ## Not yet done
 
-- **Performance tuning (stage 9).** Profiling + easy hotspot fixes pending.
-  Known opportunity: in the packet-log path, cheaply skip non-RXM-RAWX UBX
-  packets instead of fully decoding them (most UBX in big logs is not RAWX).
 - Mixed UBX/RTCM **interleaved** raw streams are intentionally out of scope for
   now — `-r raw` locks to the first family seen.
 - Unicore (uncb/unca) — out of scope.
+- Deeper performance work (noted in `PERFORMANCE.md`) — not needed at current
+  speeds.
 
 ## Performance
 
-Pre-tuning numbers from the prototype still indicate the shape (≈10–15× faster
-than Go, ≈5× less memory on `--interval 30` packet logs); they will be
-re-measured for the workspace build in stage 9.
+Stage 9 done: profiled the hot path with **samply** and took the easy wins —
+`faster-hex` for the hex decoder (was 18% self-time), `rustc-hash` `FxHashMap`
+for the `(sat,sig)` maps (SipHash was ~14%), skip non-RXM-RAWX UBX before
+decoding, a hand-written obsj serializer instead of `#[serde(flatten)]`, and one
+CRC/parse per packet-log RTCM frame. On `--interval 30 → obsj` packet logs the
+workspace build is **≈12–40× faster than Go with ≈5× less memory** (peak RSS
+< 4 MB on a 1.3 GB log), output bit-identical at exact f64. What remains in the
+profile is rtcm-rs's MSM decode and serde_json — library/inherent. Full
+methodology, the profile, and per-file numbers are in **`PERFORMANCE.md`**.
 
 ## How to reproduce
 

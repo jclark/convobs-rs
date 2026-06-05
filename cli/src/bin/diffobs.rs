@@ -58,7 +58,8 @@ fn run(args: &[String]) -> Result<ExitCode, Error> {
                 .ok_or_else(|| Error::usage(format!("missing value for {a}")))
         };
         let num = |s: String, a: &str| -> Result<f64, Error> {
-            s.parse().map_err(|_| Error::usage(format!("invalid number for {a}")))
+            s.parse()
+                .map_err(|_| Error::usage(format!("invalid number for {a}")))
         };
         match key {
             "h" | "help" => {

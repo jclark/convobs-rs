@@ -45,4 +45,7 @@ fn run_to_writer_converts_obsj_into_a_buffer() {
     assert_eq!(obs[0].sig.as_str(), "1C");
     assert_eq!(obs[0].v.pr, Some(22187868.655));
     assert_eq!(obs[0].v.cp, Some(116598092.035));
+    // The injected clock is fully honoured: the run.date metadata default comes
+    // from `now`, not the wall clock, so the conversion is deterministic.
+    assert_eq!(meta.run.date, Some(fixed_now()));
 }

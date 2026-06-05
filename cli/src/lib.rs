@@ -86,20 +86,22 @@ struct Config {
 /// clock, then runs the conversion. Returns a typed error (without exit
 /// handling).
 pub fn run(args: &[String]) -> Result<(), Error> {
-    let cfg = match parse_args(args).map_err(Error::Usage)? {
+    let now = now_instant();
+    let cfg = match parse_args(args, now).map_err(Error::Usage)? {
         Some(c) => c,
         None => return Ok(()), // --help
     };
     let writer = open_writer(cfg.output_path.as_deref())?;
-    execute(&cfg, writer, now_instant())
+    execute(&cfg, writer, now)
 }
 
 /// Test/embedding seam: runs a parsed conversion against a caller-supplied
 /// writer and clock — mirrors Go's `convJob{out}.run(now)`. `--output` is
 /// ignored here; the provided writer wins, and `now` is injected for
-/// determinism.
+/// determinism — it sets the `run.date` metadata default and bounds RTCM week
+/// resolution, so the whole run is reproducible.
 pub fn run_to_writer(args: &[String], out: Box<dyn Write>, now: Instant) -> Result<(), Error> {
-    let cfg = match parse_args(args).map_err(Error::Usage)? {
+    let cfg = match parse_args(args, now).map_err(Error::Usage)? {
         Some(c) => c,
         None => return Ok(()), // --help
     };
@@ -241,7 +243,7 @@ fn build_command() -> clap::Command {
         .arg(Arg::new("inputs").action(ArgAction::Append).num_args(0..))
 }
 
-fn parse_args(args: &[String]) -> Result<Option<Config>, String> {
+fn parse_args(args: &[String], now: Instant) -> Result<Option<Config>, String> {
     use clap::parser::ValueSource;
     let cmd = build_command();
     let m = cmd.try_get_matches_from(args).map_err(|e| e.to_string())?;
@@ -367,7 +369,7 @@ fn parse_args(args: &[String]) -> Result<Option<Config>, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
         meta = read_header_file(&text).map_err(|e| format!("{}: {}", path, e))?;
     }
-    set_metadata_defaults(&mut meta, now_instant(), interval_ns);
+    set_metadata_defaults(&mut meta, now, interval_ns);
     apply_metadata_flags(&mut meta, &m, changed)?;
 
     Ok(Some(Config {

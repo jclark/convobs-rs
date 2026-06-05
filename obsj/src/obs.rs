@@ -760,10 +760,9 @@ impl fmt::Display for ZonelessDateTime {
     }
 }
 
-/// Serializes a metadata `run.date` as a zoned (UTC, `Z`-suffixed) RFC3339
-/// timestamp. Observation `t` labels stay zoneless civil times, but `run.date`
-/// is a wall-clock instant that SatPulse round-trips through Go's `time.Time`,
-/// whose JSON decoder rejects a timestamp carrying no zone. Deserialization is
+/// Serializes a metadata `run.date` as an RFC 3339 timestamp (UTC, `Z`-suffixed):
+/// it is a wall-clock instant, so it carries a zone. Observation `t` labels, by
+/// contrast, are ISO 8601 local date-times with no zone. Deserialization is
 /// unchanged: [`parse_rfc3339_public`](crate::json::parse_rfc3339_public)
 /// already accepts `Z`, numeric offsets, and the bare zoneless form.
 fn serialize_run_date<S: Serializer>(v: &Option<Instant>, s: S) -> Result<S::Ok, S::Error> {
@@ -812,7 +811,7 @@ mod tests {
             nanos: 0,
         });
 
-        // run.date carries a zone (`Z`) so Go's time.Time JSON can read it back.
+        // run.date is an RFC 3339 timestamp, so it carries a zone (`Z`).
         let run = MetadataRun {
             program: "convobs".to_string(),
             by: String::new(),

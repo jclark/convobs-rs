@@ -6,6 +6,7 @@
 //! observations and emits the file on flush; decimation upstream keeps the
 //! buffer small.
 
+use crate::arc::{ArcToLl, LossOfLockSink};
 use crate::obs::*;
 use crate::sink::Sink;
 use std::collections::{HashMap, HashSet};
@@ -96,16 +97,6 @@ fn flush_str<W: Write>(w: &mut W, s: &mut String) -> io::Result<()> {
     Ok(())
 }
 
-fn arc_changed(state: &mut HashMap<SignalKey, (u32, bool)>, k: SignalKey, arc: u32) -> bool {
-    let st = state.get(&k).copied();
-    let changed = match st {
-        Some((prev, true)) => arc != prev,
-        _ => arc != 0,
-    };
-    state.insert(k, (arc, true));
-    changed
-}
-
 fn build_obs_file(obs: &[SignalObservation]) -> Result<ObsFile, String> {
     if obs.is_empty() {
         return Err("rinex: no observations".to_string());
@@ -116,7 +107,7 @@ fn build_obs_file(obs: &[SignalObservation]) -> Result<ObsFile, String> {
     let mut epoch_index: HashMap<i64, usize> = HashMap::new();
     let mut epochs: Vec<Epoch> = Vec::new();
     let mut frq: HashMap<SatId, i8> = HashMap::new();
-    let mut arc: HashMap<SignalKey, (u32, bool)> = HashMap::new();
+    let mut arc = ArcToLl::new();
     let mut seen_codes: HashMap<u8, Vec<ObsCode>> = HashMap::new();
     let mut seen_code_set: HashMap<u8, HashSet<ObsCode>> = HashMap::new();
     let mut first = sorted[0].t;
@@ -151,7 +142,7 @@ fn build_obs_file(obs: &[SignalObservation]) -> Result<ObsFile, String> {
         if let Some(v) = o.v.frq {
             frq.insert(o.sat, v);
         }
-        let changed = arc_changed(&mut arc, SignalKey { sat: o.sat, sig: o.sig }, o.v.arc);
+        let changed = arc.lli(SignalKey { sat: o.sat, sig: o.sig }, o.v.arc);
         let dst = e.obs.get_mut(&o.sat).unwrap();
         add_signal_observation(dst, o, changed);
         add_writer_codes(&mut seen_codes, &mut seen_code_set, o, changed);
@@ -515,7 +506,36 @@ pub fn read_observation_file(
     let mut lines = LineReader::new(r);
     let h = read_header(&mut lines)?;
     let obs = read_epochs(&mut lines, &h)?;
-    Ok((h.meta, obs))
+    Ok((h.meta, accumulate_arc(obs)))
+}
+
+/// Collecting sink, used to drive the [`LossOfLockSink`] over a buffered read.
+#[derive(Default)]
+struct ObsCollector {
+    obs: Vec<SignalObservation>,
+}
+
+impl Sink for ObsCollector {
+    fn metadata(&mut self, _m: &Metadata) -> io::Result<()> {
+        Ok(())
+    }
+    fn observation(&mut self, o: &SignalObservation) -> io::Result<()> {
+        self.obs.push(*o);
+        Ok(())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Turns the per-observation `ll` flag the reader sets from RINEX LLI back into
+/// the monotonic `arc`, using the same accumulator the converters feed.
+fn accumulate_arc(obs: Vec<SignalObservation>) -> Vec<SignalObservation> {
+    let mut acc = LossOfLockSink::new(ObsCollector::default());
+    for o in &obs {
+        let _ = acc.observation(o);
+    }
+    acc.into_inner().obs
 }
 
 struct LineReader<R: BufRead> {
@@ -660,7 +680,6 @@ fn read_epochs<R: BufRead>(
     h: &ObsHeader,
 ) -> Result<Vec<SignalObservation>, String> {
     let mut obs = Vec::new();
-    let mut arc: HashMap<SignalKey, u32> = HashMap::new();
     let leap_seconds = gps_utc_seconds(&h.meta);
     while let Some(line) = lines.next_line()? {
         if line.trim().is_empty() {
@@ -686,7 +705,7 @@ fn read_epochs<R: BufRead>(
         let t = file_to_gps_time(t, &h.time_system, leap_seconds);
         for _ in 0..count {
             let line = lines.next_line()?.ok_or("rinex: unexpected EOF in epoch")?;
-            parse_satellite_observation_line(t, &line, h, &mut arc, &mut obs)?;
+            parse_satellite_observation_line(t, &line, h, &mut obs)?;
         }
     }
     Ok(obs)
@@ -927,7 +946,6 @@ fn parse_satellite_observation_line(
     t: GpsTime,
     line: &str,
     h: &ObsHeader,
-    arc: &mut HashMap<SignalKey, u32>,
     out: &mut Vec<SignalObservation>,
 ) -> Result<(), String> {
     let line = pad_line(line, 3);
@@ -954,14 +972,13 @@ fn parse_satellite_observation_line(
                 sig,
                 v: SignalValues::default(),
             };
-            o.v.arc = *arc.get(&SignalKey { sat, sig }).unwrap_or(&0);
             if let Some(&v) = h.frq.get(&sat) {
                 o.v.frq = Some(v);
             }
             by_sig.insert(sig, o);
         }
         let o = by_sig.get_mut(&sig).unwrap();
-        add_rinex_field(o, *code, &field, arc);
+        add_rinex_field(o, *code, &field);
     }
     for sig in order {
         out.push(by_sig[&sig]);
@@ -982,7 +999,7 @@ fn rinex_field(line: &str, i: usize) -> String {
     }
 }
 
-fn add_rinex_field(o: &mut SignalObservation, code: ObsCode, field: &str, arc: &mut HashMap<SignalKey, u32>) {
+fn add_rinex_field(o: &mut SignalObservation, code: ObsCode, field: &str) {
     let bytes = field.as_bytes();
     let val = field[..14].trim();
     match code.0[0] {
@@ -998,14 +1015,10 @@ fn add_rinex_field(o: &mut SignalObservation, code: ObsCode, field: &str, arc: &
             if let Some(v) = parse_obs_float(val) {
                 o.v.cp = Some(v);
             }
-            if let Some(v) = parse_indicator(bytes[14]) {
-                let lli = v;
-                let k = SignalKey { sat: o.sat, sig: o.sig };
-                if lli & LLI_LOST_LOCK != 0 {
-                    *arc.entry(k).or_insert(0) += 1;
-                }
-                let a = *arc.get(&k).unwrap_or(&0);
-                o.v.set_rinex_lli(lli, a);
+            // The reader emits the per-observation loss-of-lock flag; the
+            // accumulator (run after the file is read) turns it into `arc`.
+            if let Some(lli) = parse_indicator(bytes[14]) {
+                o.v.set_lli(lli);
             }
             if let Some(ssi) = parse_indicator(bytes[15]) {
                 add_ssi(o, ssi);
@@ -1054,5 +1067,58 @@ fn parse_indicator(b: u8) -> Option<u8> {
         Some(b - b'0')
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn epoch(secs: i64) -> GpsTime {
+        let mut t = GpsTime::from_civil(Civil {
+            year: 2026,
+            month: 5,
+            day: 19,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            nanos: 0,
+        });
+        t.0 += secs * (1_000_000_000 / TICK_NS);
+        t
+    }
+
+    fn pr_only(t: GpsTime, arc: u32) -> SignalObservation {
+        let mut v = SignalValues::default();
+        v.pr = Some(20_000_000.0);
+        v.arc = arc;
+        SignalObservation {
+            t,
+            sat: SatId::format(b'G', 1),
+            sig: SigId(*b"1C"),
+            v,
+        }
+    }
+
+    #[test]
+    fn blank_phase_round_trips() {
+        // A pseudorange-only signal that loses lock: `arc` bumps but there is no
+        // carrier phase. The writer must emit a blank phase field carrying only
+        // the LLI, and the reader must read it back as cp=None with arc restored.
+        let obs = vec![pr_only(epoch(0), 0), pr_only(epoch(1), 1)];
+        let mut meta = Metadata {
+            version: "3.04".to_string(),
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        write_observation_file(&mut buf, &mut meta, &obs).unwrap();
+
+        let (_, back) = read_observation_file(Cursor::new(buf)).unwrap();
+        let first = back.iter().find(|o| o.t == epoch(0)).unwrap();
+        let second = back.iter().find(|o| o.t == epoch(1)).unwrap();
+        assert_eq!(first.v.arc, 0);
+        assert_eq!(second.v.cp, None, "blank phase must read back as cp=None");
+        assert_eq!(second.v.arc, 1, "the slip must survive as arc, via the LLI");
     }
 }

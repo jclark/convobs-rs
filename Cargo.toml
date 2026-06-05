@@ -1,29 +1,26 @@
-[package]
-name = "convobs"
+[workspace]
+resolver = "2"
+members = ["obsj", "rinex-obsj", "cli"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.96"
 
-[[bin]]
-name = "convobs"
-path = "src/bin/convobs.rs"
-
-[[bin]]
-name = "diffobs"
-path = "src/bin/diffobs.rs"
-
-[dependencies]
+[workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 # arbitrary_precision keeps each JSON number's exact token text, so reading a
 # float and writing it back is lossless. obsj is compared at exact-f64, so the
 # reader must round to the nearest f64; serde_json's default parser does not.
 serde_json = { version = "1", features = ["arbitrary_precision"] }
+rtcm-rs = "0.11"
+ublox = "0.10"
+rinex = { version = "0.22", default-features = false, features = ["obs", "serde"] }
 toml = "0.8"
 clap = { version = "4", features = ["std"], default-features = false }
 flate2 = "1"
-rinex = { version = "0.22", default-features = false, features = ["obs", "serde"] }
-rtcm-rs = "0.11"
-ublox = "0.10"
+obsj = { path = "obsj" }
+rinex-obsj = { path = "rinex-obsj" }
 
 [profile.release]
 opt-level = 3

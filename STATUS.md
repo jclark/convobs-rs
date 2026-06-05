@@ -1,115 +1,90 @@
 # convobs-rs — status
 
-Snapshot of the prototype as of 2026-06-05. It is a **single-package prototype**
-(under `src/`), not yet the crate split described in `PLAN.md`. Everything below
-is measured against the Go oracle (`tmp/oracle/satpulsetool`) and the convbin
-goldens, compared with our `diffobs`.
+Snapshot as of 2026-06-05, after the staged migration in `PLAN.md`. The repo is
+now the **cargo workspace** the plan describes — `obsj` (the leaf library),
+`rinex-obsj` (the `rinex`-crate bridge), and a CLI package (`convobs` +
+`diffobs`) — not the single-package prototype. Everything below is measured
+against the Go oracle (`tmp/oracle/satpulsetool`) and the convbin goldens, with
+our `diffobs`.
 
-## What works (validated)
+## Migration: stages 1–8 complete
 
-obsj is the strong, fully-validated path — every obsj conversion below matches
-the Go oracle at **exact f64 (0 diffobs differences)**:
+| stage | result |
+|---|---|
+| 1. workspace scaffold | `obsj` / `rinex-obsj` / `cli`, builds green |
+| 2. centralized `ll ↔ arc` | converters emit `ll`; `LossOfLockSink` accumulates `arc`; `ArcToLl` is the inverse; `diff` uses it |
+| 3. `rinexobs` DIY backend | golden → obsj → RINEX → re-read round-trips; blank phase = `cp=None` |
+| 4. `rtcm` on `rtcm-rs` | RTCM → obsj = **0 diffs at exact f64** vs Go (raw ints recovered from rtcm-rs's pre-scaled f64) |
+| 5. `ubx` on `ublox` | UBX → obsj = **0 diffs at exact f64** vs Go |
+| 6. `rinex-obsj` bridge | `RinexObsj` extension trait (upstreamable); RTCM/UBX → RINEX matches convbin golden with `--ignore-blank-phase` |
+| 7. CLI package | real error type; compile-time `rinex-crate` feature; runtime backend selection; gzip-from-content; `diffobs` formats by explicit option (never filename) |
+| 8. raw packet streams | `-r raw` auto-detects a single family (UBX *or* RTCM) and matches Go |
+
+Stage 9 (performance) is the only remaining work: profiling and easy hotspot
+fixes — see *Performance*.
+
+## What works (validated against the Go oracle / convbin goldens)
+
+obsj is the exact-f64 path — every obsj conversion matches Go with **0 diffobs
+differences**:
 
 | path | result |
 |---|---|
-| RTCM stream (`.rtcm`) → obsj | **0 diffs**, 114 082 records |
-| RTCM packet-log (JSONL) → obsj | **0 diffs**, 136 865 records |
-| UBX stream → obsj (m8t / f9t) | **0 diffs** (14 217 / 58 455 records) |
-| RTCM `--interval 30` → obsj (decimation) | **0 diffs**, 4 673 records |
-| `-r raw` auto-detect (RTCM) → obsj | **0 diffs**, 114 082 records |
-| obsj → obsj round-trip | self-stable (0 diffs) |
+| RTCM stream → obsj | 0 diffs, 114 082 records |
+| RTCM stream (3 h) → obsj | 0 diffs, 1 255 009 records |
+| RTCM packet-log (JSONL) → obsj | 0 diffs |
+| UBX stream → obsj (m8t / f9t) | 0 diffs (14 217 / 58 455) |
+| RTCM `--interval 30` → obsj | 0 diffs (decimation-robust via centralized `arc`) |
+| `-r raw` RTCM stream → obsj | 0 diffs |
+| `-r raw` UBX stream → obsj | 0 diffs (pack-generated single-family) |
+| obsj → obsj round-trip | self-stable |
 
-So: **RTCM and UBX → obsj, as streams and as packet logs, with decimation and
-raw auto-detect, all reproduce Go bit-for-bit at f64.** This is the headline
-capability and it works.
+RINEX, both backends (semantic diff: 5e-4):
 
-The **DIY RINEX reader/writer** (`src/rinexobs.rs`) is validated *standalone*:
-it reads a convbin golden's blank carrier-phase fields faithfully (`cp=None`
-with `arc` incremented — where the `rinex` crate invents `cp:1.0`) and
-round-trips 113 180 observations stably. It is **not yet wired into the CLI**.
+| path | result |
+|---|---|
+| RTCM/UBX → RINEX (**DIY**, default) vs convbin golden | **0 diffs**, faithful blank phase (RTCM also `--ignore-marker`) |
+| RTCM/UBX → RINEX (**crate bridge**) vs convbin golden | 0 diffs with `--ignore-blank-phase` (the crate cannot emit blank phase) |
+| DIY golden round-trip (113 180 obs) | stable |
 
-## Partial / known limitations
+The decoders are now `rtcm-rs` (framing/CRC/MSM) and `ublox` (framing/RXM-RAWX);
+the hand-rolled bit decoders and `crc24q` are gone. Exact-f64 is preserved by
+recovering the raw integers from the crates' pre-scaled fields.
 
-- **RINEX I/O in the CLI currently uses the `rinex` crate** (`src/rinexio.rs`),
-  which cannot represent a missing carrier phase carrying only a loss-of-lock
-  flag:
-  - RTCM → RINEX vs the convbin golden: **3 781 diffs**, *all* the blank-phase
-    category (3 753 `cp,ll` + 27 `cp` + 1 metadata). The other observation
-    values are correct; this is purely the blank-phase limitation, and would be
-    ~0 under the planned `diffobs --ignore-blank-phase`.
-  - `-r rinex` input → obsj: the crate reader produces **3 780 bogus `cp:1.0`**
-    values from blank-phase fields.
-  - The faithful path (the DIY `rinexobs` module) exists and is validated but is
-    not selected by the CLI yet (no backend selection wired).
-- `diffobs` itself reads `.obs` via the `rinex` crate, so diffing RINEX files
-  inherits the same blank-phase misread.
-- **`diffobs` (and any CLI) must not infer format from the filename.** The
-  prototype's `diffobs` currently picks its reader (obsj vs RINEX) *and* its
-  default tolerance from the extension — so an obsj file named otherwise is
-  mis-read as RINEX (this is exactly how a `.go`/`.rs`-named obsj file produced a
-  spurious "error" during perf testing). Per the Go-reference CLI design
-  (PLAN.md), each input's format must come from an explicit option; only
-  compression may be detected from content.
-- **Mixed UBX/RTCM raw streams are not handled.** `-r raw` works on a
-  single-family byte stream (tested: raw RTCM → obsj = 0 diffs), but the
-  prototype's raw *stream* path scans only one family over the whole buffer, so
-  an interleaved UBX+RTCM stream is mis-framed. The fix is the thin demux over
-  the crate framers (PLAN.md stage 8) — *not* porting the Go scanner. The
-  raw-mode metadata family-lock/buffering is also simplified vs the Go behaviour.
-  - **How to create test streams:** `satpulsetool pack` turns a JSONL packet log
-    into a packet byte stream. `pack log.jsonl > mixed.bin` emits all tags
-    interleaved (the mixed case to fix); `pack --tag RTCM` / `--tag UBX` emit a
-    single family. So the `tmp/` packet logs can be replayed as raw streams to
-    exercise `-r raw` both ways:
-    ```sh
-    tmp/oracle/satpulsetool pack tmp/rinex/x20p-20260531.packet.jsonl > tmp/t/mixed.bin
-    ./target/release/convobs -r raw --recent --to obsj tmp/t/mixed.bin   # must match Go
-    ```
+## Backends and features
 
-## Not yet done (per the PLAN.md migration)
+- **DIY RINEX** (`obsj` `rinexobs` feature) is the default: self-contained,
+  faithful blank-phase, no heavy deps. The lean binary is DIY-only.
+- **Crate bridge** (`rinex-obsj`, behind the CLI's `rinex-crate` feature) adds
+  CRINEX/Hatanaka via the `rinex` crate; engaged with `--rinex-backend crate`
+  or auto for CRINEX input. In the lean build, asking for it errors cleanly.
+- Compression is detected from content (gzip magic), never the filename.
+- `diffobs` takes each input's format by `--format`/`--a-format`/`--b-format`
+  and has `--ignore-blank-phase` and `--ignore-marker`.
 
-- Crate split (`obsj` / `rinex-obsj` / CLI) — still one package.
-- Centralized `ll ↔ arc` — converters still keep arc state internally.
-- Decode via `rtcm-rs` / `ublox` — currently hand-rolled bit decoders (these are
-  what give the exact-f64 obsj match today).
-- Compile-time `rinex-crate` feature + runtime backend selection.
-- `diffobs --ignore-blank-phase`.
-- Idiomatic error types (currently `Result<_, String>`).
-- Raw-mode metadata buffering / family-lock edge cases (simplified).
-- Large-scale perf validation (only ~20 MB tested so far).
-- Unicore — out of scope.
+## Not yet done
+
+- **Performance tuning (stage 9).** Profiling + easy hotspot fixes pending.
+  Known opportunity: in the packet-log path, cheaply skip non-RXM-RAWX UBX
+  packets instead of fully decoding them (most UBX in big logs is not RAWX).
+- Mixed UBX/RTCM **interleaved** raw streams are intentionally out of scope for
+  now — `-r raw` locks to the first family seen.
+- Unicore (uncb/unca) — out of scope.
 
 ## Performance
 
-Measured against the Go oracle on real-scale RTCM packet logs; **every output is
-bit-identical at exact f64** (diffobs = 0). Wall-clock time / peak RSS:
-
-| input | mode | Go | Rust | speedup |
-|---|---|---|---|---|
-| serpa-tail, 20 MB | `--interval 30` → obsj | 0.58 s / 17.8 MB | 0.04 s / 4.0 MB | ~14× |
-| maasdam, 591 MB | `--interval 30` → obsj | 16.1 s / 18.7 MB | 1.04 s / 3.9 MB | **~15×** |
-| maasdam, 591 MB | full → obsj (2.5 M rec, 346 MB out) | 19.9 s / 18 MB | 1.94 s / 4.1 MB | ~10× |
-| x20p, 1.3 GB | `--interval 30` → obsj | 26.7 s / 18.6 MB | 2.01 s / 3.8 MB | ~13× |
-
-≈ 10–15× faster, ≈ 5× less memory — and the Rust side is **not yet perf-tuned**
-(stage 8). Caveats for honesty: this is a JSON-emit-heavy workload, so much of the
-gap is Go's reflection-based `encoding/json` (and the Go writer was already
-hand-tuned — see the `linebuf`/`appendf` pprof artifacts in `tmp/`). Go's
-`encoding/json/v2` would narrow the encoding part; the GC/allocation/no-reflection
-advantage stays on the Rust side.
+Pre-tuning numbers from the prototype still indicate the shape (≈10–15× faster
+than Go, ≈5× less memory on `--interval 30` packet logs); they will be
+re-measured for the workspace build in stage 9.
 
 ## How to reproduce
 
 ```sh
-# build the Go oracle (once):
 cd ../satpulse && go build -o ../convobs-rs/tmp/oracle/satpulsetool ./cmd/satpulsetool
-cd ../convobs-rs && cargo build --release
+cd ../convobs-rs && cargo build --release            # lean (DIY) binary
+cargo build --release --features convobs-cli/rinex-crate   # with the crate backend
 
-TD=../satpulse/internal/convobscmd/testdata
-O=./tmp/oracle/satpulsetool; R=./target/release/convobs; D=./target/release/diffobs
-
-# obsj exact-f64 check (expect diffobs exit 0):
-$O convobs -r rtcm --date-from-filename --rtcm-omit-zero-do --to obsj $TD/packet-rtcm-20260519.rtcm >go.obsj
-$R          -r rtcm --date-from-filename --rtcm-omit-zero-do --to obsj $TD/packet-rtcm-20260519.rtcm >rs.obsj
-$D go.obsj rs.obsj   # exit 0 = identical
+./tmp/t/regress.sh     # obsj exact-f64 gates vs Go
+./tmp/t/rinexgate.sh   # RINEX gates, both backends, vs convbin goldens
+./tmp/t/rawgate.sh     # -r raw single-family streams vs Go
 ```

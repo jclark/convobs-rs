@@ -1,9 +1,20 @@
-//! UBX RXM-RAWX -> RINEX conversion, ported from `gps/lib/rnxubx/ubx.go`,
-//! `gps/lib/ubxbin/{rxm,rinex,common}.go`.
+//! UBX RXM-RAWX → obsj conversion.
+//!
+//! Framing and field decoding are handled by the `ublox` crate; this module is
+//! the converter algorithm on top of it. RXM-RAWX carries pseudorange and
+//! carrier phase as `f64` and Doppler as `f32` directly (no scaling), so the
+//! values pass through unchanged. Slip detection is emitted as the per-
+//! observation loss-of-lock flag, which the [`LossOfLockSink`] turns into `arc`.
+//!
+//! `ublox` 0.10 exposes the signal id as `reserved2()` (the offset-22 byte).
+//!
+//! [`LossOfLockSink`]: crate::arc::LossOfLockSink
 
 use crate::obs::*;
 use crate::sink::Sink;
 use std::collections::HashMap;
+use ublox::proto23::PacketRef;
+use ublox::{Parser, UbxPacket};
 
 // GNSS ids (ubxbin/common.go).
 const GPS: u8 = 0;
@@ -21,9 +32,6 @@ const HALF_CYC: u8 = 4;
 const SUB_HALF_CYC: u8 = 8;
 const CP_STD_MASK: u8 = 0x0F;
 
-const RAWX_CLASS: u8 = 0x02;
-const RAWX_ID: u8 = 0x15;
-
 #[derive(Clone, Copy)]
 pub struct Options {
     pub slip_threshold: u8,
@@ -34,7 +42,6 @@ pub struct Options {
 struct SignalState {
     lock: u16,
     sub_half_cyc: bool,
-    arc: u32,
     pending: bool,
     seen: bool,
 }
@@ -63,6 +70,7 @@ pub struct Converter<S: Sink> {
     opts: Options,
     sink: S,
     state: HashMap<SignalKey, SignalState>,
+    parser: Parser<Vec<u8>>,
 }
 
 impl<S: Sink> Converter<S> {
@@ -74,18 +82,8 @@ impl<S: Sink> Converter<S> {
             opts,
             sink,
             state: HashMap::new(),
+            parser: Parser::default_proto(),
         }
-    }
-
-    /// Converts one UBX frame, returning whether it was an RXM-RAWX message.
-    pub fn convert_frame(&mut self, frame: &[u8]) -> Result<bool, String> {
-        if packet_msg_is_rawx(frame) {
-            if let Some(rawx) = parse_rawx(frame) {
-                self.convert_rawx(&rawx)?;
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 
     pub fn sink_metadata(&mut self, m: &Metadata) -> Result<(), String> {
@@ -94,6 +92,48 @@ impl<S: Sink> Converter<S> {
 
     pub fn flush(&mut self) -> Result<(), String> {
         self.sink.flush().map_err(|e| e.to_string())
+    }
+
+    /// Feeds a byte chunk to the UBX framer and converts every RXM-RAWX message
+    /// it yields. Returns the number of RXM-RAWX messages converted. The parser
+    /// buffers across calls, so a frame split between chunks still parses.
+    pub fn convert_chunk(&mut self, data: &[u8]) -> Result<u64, String> {
+        // Collect owned measurements first: the parser iterator borrows `self`,
+        // so the converter state can only be touched once the iteration ends.
+        let mut batch: Vec<Rawx> = Vec::new();
+        let mut it = self.parser.consume_ubx(data);
+        while let Some(packet) = it.next() {
+            if let Ok(UbxPacket::Proto23(PacketRef::RxmRawx(rawx))) = packet {
+                let meas = rawx
+                    .measurements()
+                    .map(|m| Meas {
+                        pr_mes: m.pr_mes(),
+                        cp_mes: m.cp_mes(),
+                        do_mes: m.do_mes(),
+                        gnss_id: m.gnss_id(),
+                        sv_id: m.sv_id(),
+                        sig_id: m.reserved2(),
+                        freq_id: m.freq_id(),
+                        lock_time: m.lock_time(),
+                        cno: m.cno(),
+                        cp_stdev: m.cp_stdev().bits(),
+                        trk_stat: m.trk_stat().bits(),
+                    })
+                    .collect();
+                batch.push(Rawx {
+                    rcv_tow: rawx.rcv_tow(),
+                    week: rawx.week(),
+                    meas,
+                });
+            }
+        }
+        drop(it);
+
+        let count = batch.len() as u64;
+        for rawx in &batch {
+            self.convert_rawx(rawx)?;
+        }
+        Ok(count)
     }
 
     fn convert_rawx(&mut self, m: &Rawx) -> Result<(), String> {
@@ -128,11 +168,11 @@ impl<S: Sink> Converter<S> {
             o.v.pr = Some(meas.pr_mes);
         }
         let cp = carrier_phase(meas, self.opts.bds_geo_half_cycle);
-        let (arc, hc) = self.arc_hc(sat, sig, meas, cp.is_some());
+        let (ll, hc) = self.slip_hc(sat, sig, meas, cp.is_some());
         if let Some(cp) = cp {
             o.v.cp = Some(cp);
         }
-        o.v.arc = arc;
+        o.v.ll = ll;
         o.v.hc = hc;
         if meas.do_mes.is_finite() {
             o.v.dop = Some(meas.do_mes as f64);
@@ -146,7 +186,11 @@ impl<S: Sink> Converter<S> {
         Some(o)
     }
 
-    fn arc_hc(&mut self, sat: SatId, sig: SigId, meas: &Meas, phase: bool) -> (u32, bool) {
+    /// Detects a carrier-phase slip (loss of lock) and the half-cycle bit for one
+    /// measurement. Returns the per-observation `ll` flag; the downstream
+    /// [`LossOfLockSink`](crate::arc::LossOfLockSink) turns it into `arc`. A slip
+    /// is deferred until the next epoch that carries phase.
+    fn slip_hc(&mut self, sat: SatId, sig: SigId, meas: &Meas, phase: bool) -> (bool, bool) {
         let k = SignalKey { sat, sig };
         let mut st = self.state.get(&k).copied().unwrap_or_default();
         let sub = meas.trk_stat & SUB_HALF_CYC != 0;
@@ -166,9 +210,6 @@ impl<S: Sink> Converter<S> {
             ll = true;
             st.pending = false;
         }
-        if ll {
-            st.arc += 1;
-        }
         let mut hc = false;
         if phase && half_cycle_unresolved(meas) {
             hc = true;
@@ -177,7 +218,7 @@ impl<S: Sink> Converter<S> {
         st.sub_half_cyc = sub;
         st.seen = true;
         self.state.insert(k, st);
-        (st.arc, hc)
+        (ll, hc)
     }
 }
 
@@ -202,6 +243,37 @@ fn half_cycle_unresolved(meas: &Meas) -> bool {
     } else {
         meas.trk_stat & HALF_CYC == 0
     }
+}
+
+/// The UBX 8-bit Fletcher checksum over class+id+len+payload.
+fn checksum(data: &[u8]) -> (u8, u8) {
+    let mut a: u8 = 0;
+    let mut b: u8 = 0;
+    for &x in data {
+        a = a.wrapping_add(x);
+        b = b.wrapping_add(a);
+    }
+    (a, b)
+}
+
+/// Byte offset of the first checksum-valid UBX frame, for raw-stream family
+/// detection. `None` if the buffer holds no complete valid frame.
+pub fn first_frame_pos(data: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while i + 8 <= data.len() {
+        if data[i] == 0xB5 && data[i + 1] == 0x62 {
+            let len = u16::from_le_bytes([data[i + 4], data[i + 5]]) as usize;
+            let end = i + 6 + len + 2;
+            if end <= data.len() {
+                let (a, b) = checksum(&data[i + 2..i + 6 + len]);
+                if a == data[end - 2] && b == data[end - 1] {
+                    return Some(i);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 fn rinex_sys(gnss_id: u8) -> Option<u8> {
@@ -298,110 +370,4 @@ fn rinex_sig(gnss_id: u8, sig_id: u8) -> Option<[u8; 2]> {
         _ => return None,
     };
     Some(*s)
-}
-
-// ---- parse ----
-
-fn packet_msg_is_rawx(frame: &[u8]) -> bool {
-    frame.len() >= 6 && frame[2] == RAWX_CLASS && frame[3] == RAWX_ID
-}
-
-fn le_f64(b: &[u8]) -> f64 {
-    f64::from_le_bytes(b[..8].try_into().unwrap())
-}
-fn le_f32(b: &[u8]) -> f32 {
-    f32::from_le_bytes(b[..4].try_into().unwrap())
-}
-fn le_u16(b: &[u8]) -> u16 {
-    u16::from_le_bytes(b[..2].try_into().unwrap())
-}
-
-fn parse_rawx(frame: &[u8]) -> Option<Rawx> {
-    // frame: B5 62 cls id lenLo lenHi payload... ckA ckB
-    if frame.len() < 8 {
-        return None;
-    }
-    let len = le_u16(&frame[4..6]) as usize;
-    if frame.len() < 6 + len + 2 {
-        return None;
-    }
-    let payload = &frame[6..6 + len];
-    if payload.len() < 16 {
-        return None;
-    }
-    let version = payload[13];
-    if version != 1 {
-        return None;
-    }
-    let n = (payload.len() - 16) / 32;
-    if 16 + n * 32 != payload.len() {
-        return None;
-    }
-    let rcv_tow = le_f64(&payload[0..8]);
-    let week = le_u16(&payload[8..10]);
-    let mut meas = Vec::with_capacity(n);
-    for i in 0..n {
-        let m = &payload[16 + i * 32..16 + (i + 1) * 32];
-        meas.push(Meas {
-            pr_mes: le_f64(&m[0..8]),
-            cp_mes: le_f64(&m[8..16]),
-            do_mes: le_f32(&m[16..20]),
-            gnss_id: m[20],
-            sv_id: m[21],
-            sig_id: m[22],
-            freq_id: m[23],
-            lock_time: le_u16(&m[24..26]),
-            cno: m[26],
-            cp_stdev: m[28],
-            trk_stat: m[30],
-        });
-    }
-    Some(Rawx { rcv_tow, week, meas })
-}
-
-fn checksum(data: &[u8]) -> (u8, u8) {
-    let mut a: u8 = 0;
-    let mut b: u8 = 0;
-    for &x in data {
-        a = a.wrapping_add(x);
-        b = b.wrapping_add(a);
-    }
-    (a, b)
-}
-
-/// Iterator over checksum-valid UBX frames in a byte buffer.
-pub struct Frames<'a> {
-    data: &'a [u8],
-    i: usize,
-}
-
-pub fn frames(data: &[u8]) -> Frames<'_> {
-    Frames { data, i: 0 }
-}
-
-impl<'a> Iterator for Frames<'a> {
-    type Item = &'a [u8];
-    fn next(&mut self) -> Option<&'a [u8]> {
-        let data = self.data;
-        while self.i + 8 <= data.len() {
-            if data[self.i] != 0xB5 || data[self.i + 1] != 0x62 {
-                self.i += 1;
-                continue;
-            }
-            let len = le_u16(&data[self.i + 4..self.i + 6]) as usize;
-            let frame_end = self.i + 6 + len + 2;
-            if frame_end > data.len() {
-                return None;
-            }
-            let frame = &data[self.i..frame_end];
-            let (a, b) = checksum(&frame[2..6 + len]);
-            if a == frame[6 + len] && b == frame[6 + len + 1] {
-                self.i = frame_end;
-                return Some(frame);
-            } else {
-                self.i += 1;
-            }
-        }
-        None
-    }
 }

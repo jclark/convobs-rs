@@ -1,14 +1,20 @@
 //! Command-line parsing and conversion orchestration.
 
-use crate::obs::{Civil, Instant, Metadata, SignalObservation};
-use crate::obsj::{read_obsj, ObsJsonSink};
+pub mod error;
+pub mod packetlog;
+mod rinex_backend;
+
+use crate::error::Error;
 use crate::packetlog::{hex_decode, Entry};
-use crate::rinexio::{read_observation_file, RinexSink};
-use crate::rtcm::{self, TimeInterval};
-use crate::sink::{
+use crate::rinex_backend::{open_rinex_input, parse_backend, read_rinex, rinex_sink};
+use obsj::json::{read_obsj, ObsJsonSink};
+use obsj::obs::{Civil, Instant, Metadata, SignalObservation};
+use obsj::rtcm::{self, TimeInterval};
+use obsj::sink::{
     decimation_interval_ticks, validate_decimation_interval, DecimationSink, RequireCpFilter, Sink,
 };
-use crate::ubx;
+use obsj::ubx;
+use obsj::LossOfLockSink;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
 use std::time::SystemTime;
@@ -61,21 +67,61 @@ struct Config {
     week_date: Instant,
     inputs: Vec<String>,
     output_path: Option<String>,
+    rinex_backend: Option<RinexBackend>,
     rtcm_opts: rtcm::Options,
     ubx_opts: ubx::Options,
     meta: Metadata,
 }
 
-/// Entry point. Returns a process error (without exit handling).
-pub fn run(args: &[String]) -> Result<(), String> {
-    let cfg = match parse_args(args)? {
+/// Entry point. Returns a typed error (without exit handling).
+pub fn run(args: &[String]) -> Result<(), Error> {
+    let cfg = match parse_args(args).map_err(Error::Usage)? {
         Some(c) => c,
         None => return Ok(()), // --help
     };
     let now = now_instant();
     match cfg.from {
-        InputFormat::Rinex | InputFormat::ObsJson => convert_observation_inputs(&cfg),
-        _ => convert_packet_inputs(&cfg, now),
+        InputFormat::Rinex | InputFormat::ObsJson => convert_observation_inputs(&cfg)?,
+        _ => convert_packet_inputs(&cfg, now)?,
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Public reader API (shared with the diffobs binary)
+// ---------------------------------------------------------------------------
+
+pub use crate::rinex_backend::RinexBackend;
+
+/// The format of an observation file, selected by an explicit option — never
+/// inferred from the filename. Compression is detected from content.
+#[derive(Clone, Copy, PartialEq)]
+pub enum ObsFormat {
+    Obsj,
+    Rinex,
+}
+
+/// Parses a `--rinex-backend` value (`auto`/`diy`/`crate`).
+pub fn parse_rinex_backend(s: &str) -> std::result::Result<Option<RinexBackend>, String> {
+    parse_backend(s)
+}
+
+/// Reads an observation file (obsj or RINEX) into the obsj model. Handles gzip
+/// from content and, for RINEX, the configured backend (CRINEX auto-engages the
+/// crate backend).
+pub fn read_obs_file(
+    path: &str,
+    format: ObsFormat,
+    backend: Option<RinexBackend>,
+) -> std::result::Result<(Metadata, Vec<SignalObservation>), Error> {
+    let br: Box<dyn BufRead> = Box::new(BufReader::new(open_input(path)?));
+    let ctx = |e: String| Error::conversion(input_error(path, &e));
+    match format {
+        ObsFormat::Obsj => read_obsj(br).map_err(ctx),
+        ObsFormat::Rinex => {
+            let (backend, br) = open_rinex_input(backend, br).map_err(ctx)?;
+            read_rinex(backend, br).map_err(ctx)
+        }
     }
 }
 
@@ -93,6 +139,7 @@ fn build_command() -> clap::Command {
         .arg(Arg::new("from").short('r').long("from").default_value("raw"))
         .arg(Arg::new("packet-log").long("packet-log").action(ArgAction::SetTrue))
         .arg(Arg::new("to").long("to").default_value("rinex"))
+        .arg(Arg::new("rinex-backend").long("rinex-backend").default_value("auto"))
         .arg(Arg::new("date").long("date"))
         .arg(Arg::new("recent").long("recent").action(ArgAction::SetTrue))
         .arg(Arg::new("date-from-filename").short('f').long("date-from-filename").action(ArgAction::SetTrue))
@@ -215,6 +262,12 @@ fn parse_args(args: &[String]) -> Result<Option<Config>, String> {
         .parse()
         .map_err(|_| "--ubx-slip-threshold must be a number 0-255".to_string())?;
 
+    let rinex_backend = parse_backend(m.get_one::<String>("rinex-backend").unwrap())?;
+    let touches_rinex = from == InputFormat::Rinex || to == OutputFormat::Rinex;
+    if rinex_backend.is_some() && !touches_rinex {
+        return Err("--rinex-backend is valid only with RINEX input or output".to_string());
+    }
+
     let mut meta = Metadata::default();
     if let Some(path) = m.get_one::<String>("header-file") {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {}", path, e))?;
@@ -233,6 +286,7 @@ fn parse_args(args: &[String]) -> Result<Option<Config>, String> {
         week_date,
         inputs,
         output_path: m.get_one::<String>("output").cloned(),
+        rinex_backend,
         rtcm_opts: rtcm::Options {
             use_spec_phase_range_rate_sign: strict_prr,
             omit_zero_do,
@@ -493,33 +547,51 @@ fn open_writer(path: Option<&str>) -> Result<Box<dyn Write>, String> {
     }
 }
 
-fn build_sink(
-    writer: Box<dyn Write>,
-    to: OutputFormat,
-    interval_ns: i64,
-    require_cp: bool,
-) -> Result<Box<dyn Sink>, String> {
-    let bw = BufWriter::with_capacity(256 * 1024, writer);
-    let mut sink: Box<dyn Sink> = match to {
-        OutputFormat::Rinex => Box::new(RinexSink::new(bw)),
+fn build_sink(cfg: &Config, writer: Box<dyn Write>) -> Result<Box<dyn Sink>, String> {
+    let bw: Box<dyn Write> = Box::new(BufWriter::with_capacity(256 * 1024, writer));
+    let mut sink: Box<dyn Sink> = match cfg.to {
+        OutputFormat::Rinex => {
+            rinex_sink(cfg.rinex_backend.unwrap_or(RinexBackend::Diy), bw)?
+        }
         OutputFormat::ObsJson => Box::new(ObsJsonSink::new(bw)),
     };
-    if interval_ns != 0 {
-        let ticks = decimation_interval_ticks(interval_ns)?;
+    if cfg.interval_ns != 0 {
+        let ticks = decimation_interval_ticks(cfg.interval_ns)?;
         sink = Box::new(DecimationSink::new(sink, ticks));
     }
-    if require_cp {
+    if cfg.require_cp {
         sink = Box::new(RequireCpFilter::new(sink));
     }
     Ok(sink)
 }
 
 fn open_input(path: &str) -> Result<Box<dyn Read>, String> {
-    if path == "-" {
-        Ok(Box::new(io::stdin()))
+    let raw: Box<dyn Read> = if path == "-" {
+        Box::new(io::stdin())
     } else {
-        let f = File::open(path).map_err(|e| input_error(path, &e.to_string()))?;
-        Ok(Box::new(f))
+        Box::new(File::open(path).map_err(|e| input_error(path, &e.to_string()))?)
+    };
+    maybe_gunzip(raw).map_err(|e| input_error(path, &e.to_string()))
+}
+
+/// Transparently decompresses gzip input, detected from the gzip magic bytes in
+/// the content (never from the filename). The peeked bytes are chained back so
+/// non-gzip input is untouched.
+fn maybe_gunzip(mut r: Box<dyn Read>) -> io::Result<Box<dyn Read>> {
+    let mut magic = [0u8; 2];
+    let mut n = 0;
+    while n < magic.len() {
+        let got = r.read(&mut magic[n..])?;
+        if got == 0 {
+            break;
+        }
+        n += got;
+    }
+    let head = std::io::Cursor::new(magic[..n].to_vec());
+    if n == 2 && magic == [0x1f, 0x8b] {
+        Ok(Box::new(flate2::read::GzDecoder::new(head.chain(r))))
+    } else {
+        Ok(Box::new(head.chain(r)))
     }
 }
 
@@ -547,18 +619,21 @@ fn now_instant() -> Instant {
 // Observation-file inputs (rinex / obsj)
 // ---------------------------------------------------------------------------
 
-fn convert_observation_inputs(cfg: &Config) -> Result<(), String> {
+fn convert_observation_inputs(cfg: &Config) -> Result<(), Error> {
     let mut file_meta = Metadata::default();
     let mut obs: Vec<SignalObservation> = Vec::new();
     for path in &cfg.inputs {
-        let r = open_input(path)?;
-        let br = BufReader::new(r);
+        let br: Box<dyn BufRead> = Box::new(BufReader::new(open_input(path)?));
         let (m, o) = match cfg.from {
-            InputFormat::Rinex => read_observation_file(br),
+            InputFormat::Rinex => {
+                let (backend, br) = open_rinex_input(cfg.rinex_backend, br)
+                    .map_err(|e| Error::conversion(input_error(path, &e)))?;
+                read_rinex(backend, br)
+            }
             InputFormat::ObsJson => read_obsj(br),
             _ => unreachable!(),
         }
-        .map_err(|e| input_error(path, &e))?;
+        .map_err(|e| Error::conversion(input_error(path, &e)))?;
         file_meta.merge(&m);
         obs.extend(o);
     }
@@ -566,14 +641,15 @@ fn convert_observation_inputs(cfg: &Config) -> Result<(), String> {
     merged.merge(&cfg.meta);
 
     let writer = open_writer(cfg.output_path.as_deref())?;
-    let mut sink = build_sink(writer, cfg.to, cfg.interval_ns, cfg.require_cp)?;
+    let mut sink = build_sink(cfg, writer)?;
     if !merged.is_zero() {
         sink.metadata(&merged).map_err(|e| e.to_string())?;
     }
     for o in &obs {
         sink.observation(o).map_err(|e| e.to_string())?;
     }
-    sink.flush().map_err(|e| e.to_string())
+    sink.flush().map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -586,9 +662,13 @@ struct WeekConstraint {
     err: Option<String>,
 }
 
-fn convert_packet_inputs(cfg: &Config, now: Instant) -> Result<(), String> {
+fn convert_packet_inputs(cfg: &Config, now: Instant) -> Result<(), Error> {
     let writer = open_writer(cfg.output_path.as_deref())?;
-    let sink = build_sink(writer, cfg.to, cfg.interval_ns, cfg.require_cp)?;
+    let sink = build_sink(cfg, writer)?;
+    // Converters emit a per-observation loss-of-lock flag; the accumulator turns
+    // it into `arc`. It sits upstream of decimation so a slip in a dropped gap
+    // still surfaces on the next kept epoch.
+    let sink: Box<dyn Sink> = Box::new(LossOfLockSink::new(sink));
     let mut driver = PacketDriver::new(cfg.from, cfg.rtcm_opts, cfg.ubx_opts, sink);
 
     if !cfg.meta.is_zero() {
@@ -596,7 +676,7 @@ fn convert_packet_inputs(cfg: &Config, now: Instant) -> Result<(), String> {
     }
 
     let mut total: u64 = 0;
-    for (i, path) in cfg.inputs.iter().enumerate() {
+    for path in &cfg.inputs {
         let r = open_input(path)?;
         let c = if cfg.packet_log {
             driver
@@ -612,9 +692,10 @@ fn convert_packet_inputs(cfg: &Config, now: Instant) -> Result<(), String> {
         total += c;
     }
     if total == 0 {
-        return Err(no_observation_msg(cfg.from));
+        return Err(Error::conversion(no_observation_msg(cfg.from)));
     }
-    driver.flush()
+    driver.flush()?;
+    Ok(())
 }
 
 fn no_observation_msg(from: InputFormat) -> String {
@@ -766,7 +847,17 @@ fn digit_runs(s: &str) -> Vec<&str> {
 
 // ---- the driver ----
 
+#[derive(Clone, Copy)]
+enum FamilyKind {
+    Rtcm,
+    Ubx,
+}
+
+/// The active converter. For `raw` it starts `Pending` (holding the sink) and is
+/// resolved to a single family by the first packet seen; once resolved it does
+/// not switch (mixed UBX/RTCM raw streams are out of scope).
 enum Family {
+    Pending(Option<Box<dyn Sink>>),
     Rtcm(rtcm::Converter<Box<dyn Sink>>),
     Ubx(ubx::Converter<Box<dyn Sink>>),
 }
@@ -774,6 +865,8 @@ enum Family {
 struct PacketDriver {
     from: InputFormat,
     family: Family,
+    rtcm_opts: rtcm::Options,
+    ubx_opts: ubx::Options,
     scratch: Vec<u8>,
 }
 
@@ -786,19 +879,54 @@ impl PacketDriver {
     ) -> Self {
         let family = match from {
             InputFormat::Ubx => Family::Ubx(ubx::Converter::new(sink, ubx_opts)),
-            // raw defaults to RTCM converter; UBX-only raw inputs are handled by
-            // re-routing in convert_* when no RTCM is seen (best effort).
-            _ => Family::Rtcm(rtcm::Converter::new(sink, rtcm_opts)),
+            InputFormat::Rtcm => Family::Rtcm(rtcm::Converter::new(sink, rtcm_opts)),
+            _ => Family::Pending(Some(sink)),
         };
         PacketDriver {
             from,
             family,
+            rtcm_opts,
+            ubx_opts,
             scratch: Vec::with_capacity(4096),
+        }
+    }
+
+    /// Takes the pending sink, if the family is still unresolved.
+    fn take_pending(&mut self) -> Option<Box<dyn Sink>> {
+        match &mut self.family {
+            Family::Pending(sink) => sink.take(),
+            _ => None,
+        }
+    }
+
+    /// The RTCM converter, resolving a pending sink to the RTCM family on first
+    /// use. Returns `None` if the stream is already locked to UBX.
+    fn use_rtcm(&mut self) -> Option<&mut rtcm::Converter<Box<dyn Sink>>> {
+        if let Some(sink) = self.take_pending() {
+            self.family = Family::Rtcm(rtcm::Converter::new(sink, self.rtcm_opts));
+        }
+        match &mut self.family {
+            Family::Rtcm(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    /// The UBX converter, resolving a pending sink to the UBX family on first
+    /// use. Returns `None` if the stream is already locked to RTCM.
+    fn use_ubx(&mut self) -> Option<&mut ubx::Converter<Box<dyn Sink>>> {
+        if let Some(sink) = self.take_pending() {
+            self.family = Family::Ubx(ubx::Converter::new(sink, self.ubx_opts));
+        }
+        match &mut self.family {
+            Family::Ubx(c) => Some(c),
+            _ => None,
         }
     }
 
     fn sink_metadata(&mut self, m: &Metadata) -> Result<(), String> {
         match &mut self.family {
+            Family::Pending(Some(s)) => s.metadata(m).map_err(|e| e.to_string()),
+            Family::Pending(None) => Ok(()),
             Family::Rtcm(c) => c.sink_metadata(m),
             Family::Ubx(c) => c.sink_metadata(m),
         }
@@ -806,6 +934,8 @@ impl PacketDriver {
 
     fn flush(&mut self) -> Result<(), String> {
         match &mut self.family {
+            Family::Pending(Some(s)) => s.flush().map_err(|e| e.to_string()),
+            Family::Pending(None) => Ok(()),
             Family::Rtcm(c) => c.flush(),
             Family::Ubx(c) => c.flush(),
         }
@@ -855,7 +985,7 @@ impl PacketDriver {
                 let t = entry
                     .t
                     .as_deref()
-                    .and_then(crate::obsj::parse_rfc3339_public)
+                    .and_then(obsj::json::parse_rfc3339_public)
                     .ok_or_else(|| {
                         format!("packet log line {}: RTCM packet log line {} has no timestamp", line_no, line_no)
                     })?;
@@ -888,44 +1018,44 @@ impl PacketDriver {
         BufReader::new(r)
             .read_to_end(&mut data)
             .map_err(|e| e.to_string())?;
-        let mut count: u64 = 0;
-        match self.from {
-            InputFormat::Ubx => {
-                let frames: Vec<&[u8]> = ubx::frames(&data).collect();
-                for frame in frames {
-                    if let Family::Ubx(c) = &mut self.family {
-                        if c.convert_frame(frame)? {
-                            count += 1;
-                        }
-                    }
-                }
-            }
-            _ => {
-                // RTCM (and raw best-effort RTCM): the first frame carries the
-                // week constraint; subsequent frames resolve by continuity.
-                let frames: Vec<&[u8]> = rtcm::frames(&data).collect();
-                let mut week_used = false;
-                for frame in frames {
-                    let is7 = rtcm::is_msm7_frame(frame);
-                    let (interval, wrap) = if !week_used {
-                        week_used = true;
-                        (wc.interval, true)
-                    } else {
-                        (TimeInterval::default(), false)
-                    };
-                    if let Family::Rtcm(c) = &mut self.family {
-                        c.convert_frame(frame, interval).map_err(|e| {
-                            if wrap {
-                                format!("{}{}", wc.errf, e)
-                            } else {
-                                e
-                            }
-                        })?;
-                    }
-                    if is7 {
-                        count += 1;
-                    }
-                }
+        // `raw` picks a single family from whichever valid frame comes first.
+        let kind = match self.from {
+            InputFormat::Ubx => Some(FamilyKind::Ubx),
+            InputFormat::Rtcm => Some(FamilyKind::Rtcm),
+            InputFormat::Raw => detect_raw_family(&data),
+            _ => None,
+        };
+        match kind {
+            Some(FamilyKind::Ubx) => match self.use_ubx() {
+                Some(c) => Ok(c.convert_chunk(&data)?),
+                None => Ok(0),
+            },
+            Some(FamilyKind::Rtcm) => self.convert_rtcm_stream(&data, wc),
+            None => Ok(0),
+        }
+    }
+
+    fn convert_rtcm_stream(&mut self, data: &[u8], wc: &WeekConstraint) -> Result<u64, String> {
+        let c = match self.use_rtcm() {
+            Some(c) => c,
+            None => return Ok(0),
+        };
+        // The first frame carries the week constraint; the rest resolve by
+        // continuity.
+        let mut count = 0;
+        let mut week_used = false;
+        for frame in rtcm::frames(data) {
+            let is7 = rtcm::is_msm7_frame(frame);
+            let (interval, wrap) = if !week_used {
+                week_used = true;
+                (wc.interval, true)
+            } else {
+                (TimeInterval::default(), false)
+            };
+            c.convert_frame(frame, interval)
+                .map_err(|e| if wrap { format!("{}{}", wc.errf, e) } else { e })?;
+            if is7 {
+                count += 1;
             }
         }
         Ok(count)
@@ -937,28 +1067,37 @@ impl PacketDriver {
         let mut produced = false;
         match tag {
             "RTCM" => {
-                for frame in rtcm::frames(payload) {
-                    let is7 = rtcm::is_msm7_frame(frame);
-                    if let Family::Rtcm(c) = &mut self.family {
-                        c.convert_frame(frame, week)
-                            .map_err(|e| format!("RTCM epoch does not match packet-log timestamp: {}", e))?;
-                    }
-                    if is7 {
-                        produced = true;
+                if let Some(c) = self.use_rtcm() {
+                    for frame in rtcm::frames(payload) {
+                        let is7 = rtcm::is_msm7_frame(frame);
+                        c.convert_frame(frame, week).map_err(|e| {
+                            format!("RTCM epoch does not match packet-log timestamp: {}", e)
+                        })?;
+                        if is7 {
+                            produced = true;
+                        }
                     }
                 }
             }
             "UBX" => {
-                for frame in ubx::frames(payload) {
-                    if let Family::Ubx(c) = &mut self.family {
-                        if c.convert_frame(frame)? {
-                            produced = true;
-                        }
+                if let Some(c) = self.use_ubx() {
+                    if c.convert_chunk(payload)? > 0 {
+                        produced = true;
                     }
                 }
             }
             _ => {}
         }
         Ok(produced)
+    }
+}
+
+/// Picks the family for a `raw` stream from whichever valid frame appears first.
+fn detect_raw_family(data: &[u8]) -> Option<FamilyKind> {
+    match (rtcm::first_frame_pos(data), ubx::first_frame_pos(data)) {
+        (Some(r), Some(u)) => Some(if r <= u { FamilyKind::Rtcm } else { FamilyKind::Ubx }),
+        (Some(_), None) => Some(FamilyKind::Rtcm),
+        (None, Some(_)) => Some(FamilyKind::Ubx),
+        (None, None) => None,
     }
 }

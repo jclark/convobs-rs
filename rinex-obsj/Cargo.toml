@@ -1,0 +1,11 @@
+[package]
+name = "rinex-obsj"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MPL-2.0"
+description = "Bridge between the obsj observation model and the `rinex` crate, shaped for upstreaming."
+
+[dependencies]
+obsj = { workspace = true }
+rinex = { workspace = true }

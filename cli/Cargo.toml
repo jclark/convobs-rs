@@ -1,0 +1,33 @@
+[package]
+name = "convobs-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "convobs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "convobs"
+path = "src/bin/convobs.rs"
+
+[[bin]]
+name = "diffobs"
+path = "src/bin/diffobs.rs"
+
+[features]
+default = []
+# Link the `rinex` crate (via the rinex-obsj bridge) as an optional RINEX
+# backend, adding CRINEX/Hatanaka support. Off by default → a lean binary that
+# uses only the self-contained DIY RINEX backend.
+rinex-crate = ["dep:rinex-obsj"]
+
+[dependencies]
+obsj = { workspace = true, features = ["rinexobs", "rtcm", "ubx"] }
+rinex-obsj = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+clap = { workspace = true }
+flate2 = { workspace = true }

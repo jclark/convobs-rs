@@ -1,19 +1,45 @@
-//! RINEX observation read/write, implemented as an adapter over the `rinex`
-//! crate. The crate owns the on-disk format; this module translates between its
-//! epoch-keyed model and our flat midpoint, deriving the loss-of-lock indicator
-//! from `arc` transitions on write and reconstructing `arc` from it on read.
+//! Bridge between the obsj observation model and the [`rinex`] crate.
 //!
-//! RINEX output is validated semantically (diffobs at 5e-4), so the crate's
-//! formatting choices need not match any particular byte layout.
+//! The crate owns the on-disk format; this module translates both ways between
+//! its epoch-keyed model and obsj's flat one, going through obsj's centralized
+//! loss-of-lock transform (`arc → ll` on write, `ll → arc` on read). The whole
+//! mapping is the [`RinexObsj`] extension trait on [`Rinex`] plus a couple of
+//! free helpers, so it can be contributed upstream as the `rinex` crate's own
+//! `obsj` feature with a near-mechanical change — it touches public APIs only.
+//!
+//! Output is validated semantically (diffobs at 5e-4), so the crate's formatting
+//! choices need not match any particular byte layout. The one thing the crate
+//! cannot represent — a blank carrier phase carrying only a loss-of-lock flag —
+//! is dropped on write and is what `diffobs --ignore-blank-phase` covers.
 
-use crate::obs::*;
-use crate::sink::Sink;
-use rinex::observation::{EpochFlag, LliFlags, ObsKey, Observations, SignalObservation as XSig, SNR};
+use obsj::arc::{ArcToLl, LossOfLockSink};
+use obsj::obs::*;
+use obsj::sink::Sink;
+use rinex::observation::{EpochFlag, LliFlags, ObsKey, Observations, SignalObservation as XSig};
 use rinex::prelude::{Constellation, Duration, Epoch, Header, Observable, Rinex, TimeScale, Version, SV};
 use rinex::record::Record;
 use std::collections::{BTreeMap, HashMap};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::str::FromStr;
+
+/// Maps a [`Rinex`] observation record to and from the obsj model. Shaped as an
+/// extension trait over public `rinex` APIs so it is upstreamable as-is.
+pub trait RinexObsj {
+    /// Builds a RINEX observation record from obsj metadata and observations.
+    fn from_obsj(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, String>;
+    /// Extracts the obsj model (metadata + observations) from this record.
+    fn to_obsj(&self) -> (Metadata, Vec<SignalObservation>);
+}
+
+impl RinexObsj for Rinex {
+    fn from_obsj(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, String> {
+        build_rinex(meta, obs)
+    }
+
+    fn to_obsj(&self) -> (Metadata, Vec<SignalObservation>) {
+        (metadata_from_header(&self.header), observations_from_record(self))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Writing
@@ -48,7 +74,7 @@ impl<W: Write> Sink for RinexSink<W> {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let rinex = build_rinex(&self.meta, &self.obs)
+        let rinex = Rinex::from_obsj(&self.meta, &self.obs)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let mut bw = BufWriter::new(&mut self.writer);
         rinex
@@ -91,24 +117,6 @@ fn observable(typ: u8, sig: SigId) -> Observable {
     Observable::from_str(std::str::from_utf8(&code).unwrap()).expect("valid observation code")
 }
 
-/// Tracks whether `arc` changed since the previous kept observation of a
-/// signal, which is exactly RINEX LLI bit 0.
-#[derive(Default)]
-struct ArcState {
-    seen: HashMap<SignalKey, u32>,
-}
-
-impl ArcState {
-    fn changed(&mut self, key: SignalKey, arc: u32) -> bool {
-        let changed = match self.seen.get(&key) {
-            Some(&prev) => arc != prev,
-            None => arc != 0,
-        };
-        self.seen.insert(key, arc);
-        changed
-    }
-}
-
 fn build_rinex(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, String> {
     if obs.is_empty() {
         return Err("no observations".to_string());
@@ -119,7 +127,7 @@ fn build_rinex(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Stri
     let first = sorted.first().unwrap().t;
     let last = sorted.last().unwrap().t;
 
-    let mut arc = ArcState::default();
+    let mut arc = ArcToLl::new();
     let mut record: Record = Record::ObsRecord(BTreeMap::new());
     let signals_record = record.as_mut_obs().unwrap();
     let mut codes: HashMap<Constellation, Vec<Observable>> = HashMap::new();
@@ -129,7 +137,7 @@ fn build_rinex(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Stri
     for o in &sorted {
         let sv = SV::from_str(o.sat.as_str()).map_err(|_| format!("invalid satellite {}", o.sat))?;
         let constellation = sv.constellation;
-        let changed = arc.changed(SignalKey { sat: o.sat, sig: o.sig }, o.v.arc);
+        let changed = arc.lli(SignalKey { sat: o.sat, sig: o.sig }, o.v.arc);
         let lli_bits = o.v.rinex_lli(changed);
 
         if let Some(frq) = o.v.frq {
@@ -161,12 +169,13 @@ fn build_rinex(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Stri
         if let Some(pr) = o.v.pr {
             push(TYPE_CODE, pr, None);
         }
-        match o.v.cp {
-            Some(cp) => push(TYPE_PHASE, cp, lli),
-            // A pseudorange-only signal that lost lock carries the indicator on a
-            // blank phase field; represent the blank value as NaN.
-            None if lli_bits != 0 => push(TYPE_PHASE, f64::NAN, lli),
-            None => {}
+        // The `rinex` crate's observation value is a mandatory f64, so a blank
+        // carrier phase that exists only to carry a loss-of-lock indicator (a
+        // pseudorange-only signal that lost lock) cannot be represented and is
+        // dropped — this is the documented limitation `--ignore-blank-phase`
+        // skips when validating this backend against convbin/Go goldens.
+        if let Some(cp) = o.v.cp {
+            push(TYPE_PHASE, cp, lli);
         }
         if let Some(dop) = o.v.dop {
             push(TYPE_DOPPLER, dop, None);
@@ -187,7 +196,11 @@ fn build_rinex(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Stri
     header.rcvr = build_receiver(meta);
     header.rcvr_antenna = build_antenna(meta);
     header.glo_channels = glo_channels;
-    header.rx_position = meta.approx_position.map(|p| (p[0], p[1], p[2]));
+    // convbin, the Go reference, and the DIY backend all emit an APPROX POSITION
+    // line, zero-filled when unknown; match that so semantically-equal output
+    // does not read back as a spurious metadata difference.
+    let pos = meta.approx_position.unwrap_or([0.0, 0.0, 0.0]);
+    header.rx_position = Some((pos[0], pos[1], pos[2]));
     if let Some(ls) = meta.leap_seconds {
         header.leap = Some(rinex::prelude::Leap {
             leap: ls as u32,
@@ -275,15 +288,14 @@ fn build_antenna(meta: &Metadata) -> Option<rinex::hardware::Antenna> {
 // Reading
 // ---------------------------------------------------------------------------
 
-/// Reads a RINEX observation file into the midpoint model.
+/// Reads a RINEX observation file into the obsj model (convenience over
+/// [`Rinex::parse`] + [`RinexObsj::to_obsj`]).
 pub fn read_observation_file<R: Read>(
     r: R,
 ) -> Result<(Metadata, Vec<SignalObservation>), String> {
     let mut reader = BufReader::new(r);
     let rinex = Rinex::parse(&mut reader).map_err(|e| e.to_string())?;
-    let meta = metadata_from_header(&rinex.header);
-    let obs = observations_from_record(&rinex);
-    Ok((meta, obs))
+    Ok(rinex.to_obsj())
 }
 
 fn metadata_from_header(header: &Header) -> Metadata {
@@ -314,7 +326,6 @@ fn metadata_from_header(header: &Header) -> Metadata {
 
 fn observations_from_record(rinex: &Rinex) -> Vec<SignalObservation> {
     let mut out = Vec::new();
-    let mut arc: HashMap<SignalKey, u32> = HashMap::new();
     let record = match rinex.record.as_obs() {
         Some(r) => r,
         None => return out,
@@ -341,12 +352,10 @@ fn observations_from_record(rinex: &Rinex) -> Vec<SignalObservation> {
                 ObsKind::Code => values.pr = Some(sig.value),
                 ObsKind::Phase => {
                     values.cp = Some(sig.value);
+                    // Emit the per-observation loss-of-lock flag; the accumulator
+                    // below turns it into `arc`, as the converters do.
                     if let Some(lli) = sig.lli {
-                        if lli.contains(LliFlags::LOCK_LOSS) {
-                            *arc.entry(k).or_insert(0) += 1;
-                        }
-                        let a = *arc.get(&k).unwrap_or(&0);
-                        values.set_rinex_lli(lli.bits(), a);
+                        values.set_lli(lli.bits());
                     }
                 }
                 ObsKind::Doppler => values.dop = Some(sig.value),
@@ -356,17 +365,44 @@ fn observations_from_record(rinex: &Rinex) -> Vec<SignalObservation> {
         }
 
         for k in order {
-            let mut v = by_key[&k];
-            v.arc = *arc.get(&k).unwrap_or(&0);
             out.push(SignalObservation {
                 t,
                 sat: k.sat,
                 sig: k.sig,
-                v,
+                v: by_key[&k],
             });
         }
     }
-    out
+    accumulate_arc(out)
+}
+
+/// Collecting sink, used to drive [`LossOfLockSink`] over a buffered read.
+#[derive(Default)]
+struct ObsCollector {
+    obs: Vec<SignalObservation>,
+}
+
+impl Sink for ObsCollector {
+    fn metadata(&mut self, _m: &Metadata) -> io::Result<()> {
+        Ok(())
+    }
+    fn observation(&mut self, o: &SignalObservation) -> io::Result<()> {
+        self.obs.push(*o);
+        Ok(())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Turns the per-observation `ll` flag (read from RINEX LLI) into `arc`, using
+/// the same accumulator the converters feed.
+fn accumulate_arc(obs: Vec<SignalObservation>) -> Vec<SignalObservation> {
+    let mut acc = LossOfLockSink::new(ObsCollector::default());
+    for o in &obs {
+        let _ = acc.observation(o);
+    }
+    acc.into_inner().obs
 }
 
 enum ObsKind {

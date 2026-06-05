@@ -1,0 +1,23 @@
+[package]
+name = "obsj"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+description = "The obsj GNSS observation format and model: serde (de)serialization, the arc/loss-of-lock machinery, and a semantic diff."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+rtcm-rs = { workspace = true, optional = true }
+ublox = { workspace = true, optional = true }
+
+[features]
+default = []
+# Self-contained fixed-column RINEX observation reader/writer with an optional
+# observation value (faithful blank-phase round-trips). No heavy dependencies.
+rinexobs = []
+# RTCM MSM7 -> obsj converter (framing/CRC/decode via rtcm-rs).
+rtcm = ["dep:rtcm-rs"]
+# UBX RXM-RAWX -> obsj converter (framing/decode via ublox).
+ubx = ["dep:ublox"]

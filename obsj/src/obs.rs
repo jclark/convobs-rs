@@ -329,6 +329,11 @@ pub struct SignalValues {
     pub hc: bool,
     #[serde(skip_serializing_if = "is_false", default)]
     pub bt: bool,
+    /// Transient loss-of-lock flag emitted by converters, consumed by
+    /// [`LossOfLockSink`](crate::arc::LossOfLockSink) to compute `arc`. Never on
+    /// the wire (the canonical form is `arc`); `ll` as an obsj key is rejected.
+    #[serde(skip)]
+    pub(crate) ll: bool,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -350,10 +355,13 @@ impl SignalValues {
             && !self.bt
     }
 
-    pub fn set_rinex_lli(&mut self, x: u8, arc: u32) {
-        self.arc = arc;
-        self.hc = x & LLI_HALF_CYCLE != 0;
-        self.bt = x & LLI_BOC != 0;
+    /// Sets the transient loss-of-lock flag and the half-cycle/BOC bits from a
+    /// RINEX LLI byte (the inverse of [`rinex_lli`](Self::rinex_lli)). `arc` is
+    /// assigned later by the [`LossOfLockSink`](crate::arc::LossOfLockSink).
+    pub fn set_lli(&mut self, lli: u8) {
+        self.ll = lli & LLI_LOST_LOCK != 0;
+        self.hc = lli & LLI_HALF_CYCLE != 0;
+        self.bt = lli & LLI_BOC != 0;
     }
 
     pub fn rinex_lli(&self, arc_changed: bool) -> u8 {
@@ -647,7 +655,7 @@ impl Serialize for Instant {
 impl<'de> Deserialize<'de> for Instant {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
         let s = <std::borrow::Cow<str>>::deserialize(d)?;
-        crate::obsj::parse_rfc3339_public(&s)
+        crate::json::parse_rfc3339_public(&s)
             .ok_or_else(|| de::Error::custom(format!("invalid time {s:?}")))
     }
 }

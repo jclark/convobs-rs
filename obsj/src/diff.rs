@@ -3,7 +3,8 @@
 //! the validation oracle — obsj is compared at exact-f64 (tolerance 0), RINEX
 //! at 5e-4 (its three-decimal text precision).
 
-use crate::obs::{GpsTime, Metadata, SatId, SigId, SignalObservation, SignalValues};
+use crate::arc::ArcToLl;
+use crate::obs::{GpsTime, Metadata, SatId, SigId, SignalKey, SignalObservation, SignalValues};
 use std::collections::HashMap;
 
 #[derive(Clone, Copy)]
@@ -61,25 +62,34 @@ fn index_observations(obs: &[SignalObservation]) -> ObsIndex<'_> {
 }
 
 /// Compares two observation streams, returning the list of differences.
+///
+/// With `ignore_blank_phase`, the carrier-phase and loss-of-lock comparison is
+/// skipped for a signal whenever either side carries no carrier phase. That
+/// covers the `rinex`-crate backend, which cannot emit a blank phase that exists
+/// only to hold a loss-of-lock flag, so it drops the signal's phase entirely.
 pub fn diff_observations(
     a: &[SignalObservation],
     b: &[SignalObservation],
     tol: ObsTolerances,
+    ignore_blank_phase: bool,
 ) -> Vec<DiffRecord> {
     let ai = index_observations(a);
     let bi = index_observations(b);
     let mut out = Vec::new();
 
-    let mut a_arc = ArcTracker::default();
-    let mut b_arc = ArcTracker::default();
+    let mut a_arc = ArcToLl::new();
+    let mut b_arc = ArcToLl::new();
 
     for t in diff_times(&ai, &bi) {
         for k in diff_keys(ai.epochs.get(&t), bi.epochs.get(&t)) {
             let (mut af, mut bf) = compare_at(t, k, &ai, &bi, tol);
-            let a_ll = a_arc.transition(k, &ai, t);
-            let b_ll = b_arc.transition(k, &bi, t);
+            let a_ll = transition_at(&mut a_arc, &ai, t, k);
+            let b_ll = transition_at(&mut b_arc, &bi, t, k);
             if let (Some(af_v), Some(bf_v)) = (af.as_mut(), bf.as_mut()) {
-                if a_ll != b_ll {
+                if ignore_blank_phase && cp_blank(&ai, &bi, t, k) {
+                    af_v.v.cp = None;
+                    bf_v.v.cp = None;
+                } else if a_ll != b_ll {
                     af_v.ll = a_ll;
                     bf_v.ll = b_ll;
                 }
@@ -99,23 +109,25 @@ pub fn diff_observations(
     out
 }
 
-#[derive(Default)]
-struct ArcTracker {
-    prev: HashMap<(SatId, SigId), u32>,
-    seen: HashMap<(SatId, SigId), bool>,
+/// Whether the signal `k` at epoch `t` is present in both streams but lacks a
+/// carrier phase on at least one side (the blank-phase case).
+fn cp_blank(ai: &ObsIndex, bi: &ObsIndex, t: GpsTime, k: (SatId, SigId)) -> bool {
+    let has_cp = |idx: &ObsIndex| {
+        idx.epochs
+            .get(&t)
+            .and_then(|m| m.get(&k))
+            .map(|&i| idx.obs[i].v.cp.is_some())
+    };
+    matches!((has_cp(ai), has_cp(bi)), (Some(a), Some(b)) if !a || !b)
 }
 
-impl ArcTracker {
-    fn transition(&mut self, k: (SatId, SigId), idx: &ObsIndex, t: GpsTime) -> bool {
-        let i = match idx.epochs.get(&t).and_then(|m| m.get(&k)) {
-            Some(&i) => i,
-            None => return false,
-        };
-        let arc = idx.obs[i].v.arc;
-        let transitioned = *self.seen.get(&k).unwrap_or(&false) && arc != *self.prev.get(&k).unwrap_or(&0);
-        self.prev.insert(k, arc);
-        self.seen.insert(k, true);
-        transitioned
+/// The loss-of-lock transition for key `k` at epoch `t` in one stream. When the
+/// signal is absent this epoch the tracker is left untouched, so the transition
+/// is always measured against the previous epoch in which it *was* present.
+fn transition_at(arc: &mut ArcToLl, idx: &ObsIndex, t: GpsTime, k: (SatId, SigId)) -> bool {
+    match idx.epochs.get(&t).and_then(|m| m.get(&k)) {
+        Some(&i) => arc.transition(SignalKey { sat: k.0, sig: k.1 }, idx.obs[i].v.arc),
+        None => false,
     }
 }
 
@@ -232,14 +244,24 @@ fn cmp_f32(a: &mut Option<f32>, b: &mut Option<f32>, av: Option<f32>, bv: Option
 // ---- metadata diff ----
 
 /// Compares two metadata records, returning the differing fields per side.
-/// Run and Comment are ignored (per the diffobs spec).
-pub fn diff_metadata(a: &Metadata, b: &Metadata, tol: MetadataTolerances) -> (Metadata, Metadata) {
+/// Run and Comment are always ignored (per the diffobs spec). With
+/// `ignore_marker`, the marker fields are ignored too — convbin and SatPulse use
+/// the RTCM station id as the marker *name* vs *number* respectively, so the
+/// marker is cleaned when validating RTCM goldens.
+pub fn diff_metadata(
+    a: &Metadata,
+    b: &Metadata,
+    tol: MetadataTolerances,
+    ignore_marker: bool,
+) -> (Metadata, Metadata) {
     let mut ao = Metadata::default();
     let mut bo = Metadata::default();
     cmp_str(&mut ao.version, &mut bo.version, &a.version, &b.version);
-    cmp_str(&mut ao.marker.name, &mut bo.marker.name, &a.marker.name, &b.marker.name);
-    cmp_str(&mut ao.marker.number, &mut bo.marker.number, &a.marker.number, &b.marker.number);
-    cmp_str(&mut ao.marker.type_, &mut bo.marker.type_, &a.marker.type_, &b.marker.type_);
+    if !ignore_marker {
+        cmp_str(&mut ao.marker.name, &mut bo.marker.name, &a.marker.name, &b.marker.name);
+        cmp_str(&mut ao.marker.number, &mut bo.marker.number, &a.marker.number, &b.marker.number);
+        cmp_str(&mut ao.marker.type_, &mut bo.marker.type_, &a.marker.type_, &b.marker.type_);
+    }
     cmp_str(&mut ao.observer, &mut bo.observer, &a.observer, &b.observer);
     cmp_str(&mut ao.agency, &mut bo.agency, &a.agency, &b.agency);
     cmp_str(&mut ao.receiver.number, &mut bo.receiver.number, &a.receiver.number, &b.receiver.number);

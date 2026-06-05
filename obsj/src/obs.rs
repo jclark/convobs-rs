@@ -530,7 +530,11 @@ pub struct MetadataRun {
     pub program: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub by: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_run_date"
+    )]
     pub date: Option<Instant>,
 }
 
@@ -756,6 +760,34 @@ impl fmt::Display for ZonelessDateTime {
     }
 }
 
+/// Serializes a metadata `run.date` as a zoned (UTC, `Z`-suffixed) RFC3339
+/// timestamp. Observation `t` labels stay zoneless civil times, but `run.date`
+/// is a wall-clock instant that SatPulse round-trips through Go's `time.Time`,
+/// whose JSON decoder rejects a timestamp carrying no zone. Deserialization is
+/// unchanged: [`parse_rfc3339_public`](crate::json::parse_rfc3339_public)
+/// already accepts `Z`, numeric offsets, and the bare zoneless form.
+fn serialize_run_date<S: Serializer>(v: &Option<Instant>, s: S) -> Result<S::Ok, S::Error> {
+    match v {
+        Some(i) => s.serialize_some(&ZonedDateTime(*i)),
+        None => s.serialize_none(),
+    }
+}
+
+/// Like [`ZonelessDateTime`] but with a trailing `Z` marking UTC.
+struct ZonedDateTime(Instant);
+
+impl fmt::Display for ZonedDateTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}Z", ZonelessDateTime(self.0))
+    }
+}
+
+impl Serialize for ZonedDateTime {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -766,6 +798,42 @@ mod tests {
         let s = "2026-05-28T05:21:37.0969400";
         let t = parse_time(s).unwrap();
         assert_eq!(t.to_string(), s);
+    }
+
+    #[test]
+    fn run_date_serializes_zoned_observation_time_does_not() {
+        let inst = Instant::from_civil(Civil {
+            year: 2026,
+            month: 6,
+            day: 5,
+            hour: 4,
+            minute: 41,
+            second: 55,
+            nanos: 0,
+        });
+
+        // run.date carries a zone (`Z`) so Go's time.Time JSON can read it back.
+        let run = MetadataRun {
+            program: "convobs".to_string(),
+            by: String::new(),
+            date: Some(inst),
+        };
+        let json = serde_json::to_string(&run).unwrap();
+        assert!(
+            json.contains("\"date\":\"2026-06-05T04:41:55Z\""),
+            "run.date must be zoned: {json}"
+        );
+
+        // ...but the same instant serialized as an observation `t` label (the
+        // bare Instant path) stays a zoneless civil time.
+        assert_eq!(
+            serde_json::to_string(&inst).unwrap(),
+            "\"2026-06-05T04:41:55\""
+        );
+
+        // The zoned form round-trips back to the same instant.
+        let back: MetadataRun = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.date, Some(inst));
     }
 
     fn civil(year: i64, month: u32, day: u32) -> Civil {

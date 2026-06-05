@@ -22,6 +22,17 @@ For example:
 See the [**convobs**(1) man page](docs/convobs.1.md) for the full set of options,
 the `obsj` field definitions, and the RINEX header metadata format.
 
+A companion command, **diffobs**, compares two observation files (`obsj` or
+RINEX) semantically; run `diffobs --help` for details.
+
+## Building
+
+With a [Rust toolchain](https://rustup.rs/) installed, run `make release`; the
+`convobs` and `diffobs` binaries are written to `target/release`. Run `make` on
+its own to list all targets, or `make install` to install the binaries into
+`~/.cargo/bin`. To support CRINEX (Hatanaka-compressed) RINEX input, build with
+the external backend using `make release-full` (or `make install-full`).
+
 There is also an implementation in Go that is part of
 [SatPulse](https://satpulse.net/), exposed as the `satpulsetool convobs` command
 and documented in its

@@ -5,7 +5,7 @@
 
 use crate::arc::ArcToLl;
 use crate::obs::{GpsTime, Metadata, SatId, SigId, SignalKey, SignalObservation, SignalValues};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy)]
 pub struct ObsTolerances {
@@ -132,10 +132,10 @@ fn transition_at(arc: &mut ArcToLl, idx: &ObsIndex, t: GpsTime, k: (SatId, SigId
 }
 
 fn diff_times(a: &ObsIndex, b: &ObsIndex) -> Vec<GpsTime> {
-    let mut seen: HashMap<GpsTime, ()> = HashMap::new();
+    let mut seen: HashSet<GpsTime> = HashSet::new();
     let mut out = Vec::with_capacity(a.times.len() + b.times.len());
     for &t in a.times.iter().chain(b.times.iter()) {
-        if seen.insert(t, ()).is_none() {
+        if seen.insert(t) {
             out.push(t);
         }
     }
@@ -147,11 +147,11 @@ fn diff_keys(
     a: Option<&HashMap<(SatId, SigId), usize>>,
     b: Option<&HashMap<(SatId, SigId), usize>>,
 ) -> Vec<(SatId, SigId)> {
-    let mut seen: HashMap<(SatId, SigId), ()> = HashMap::new();
+    let mut seen: HashSet<(SatId, SigId)> = HashSet::new();
     let mut out = Vec::new();
     for m in [a, b].into_iter().flatten() {
         for &k in m.keys() {
-            if seen.insert(k, ()).is_none() {
+            if seen.insert(k) {
                 out.push(k);
             }
         }

@@ -366,14 +366,7 @@ fn is_false(b: &bool) -> bool {
 
 impl SignalValues {
     pub fn is_zero(&self) -> bool {
-        self.frq.is_none()
-            && self.pr.is_none()
-            && self.cp.is_none()
-            && self.dop.is_none()
-            && self.cn0.is_none()
-            && self.arc == 0
-            && !self.hc
-            && !self.bt
+        *self == Self::default()
     }
 
     /// Sets the transient loss-of-lock flag and the half-cycle/BOC bits from a
@@ -470,7 +463,7 @@ pub struct SignalKey {
 }
 
 /// An instant in time, used for metadata run dates (Unix scale).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Instant {
     pub secs: i64,
     pub nanos: u32,
@@ -506,7 +499,7 @@ impl Instant {
     }
 
     pub fn is_zero(self) -> bool {
-        self.secs == 0 && self.nanos == 0
+        self == Self::default()
     }
 }
 
@@ -522,7 +515,7 @@ pub struct MetadataRun {
 
 impl MetadataRun {
     pub fn is_zero(&self) -> bool {
-        self.program.is_empty() && self.by.is_empty() && self.date.is_none()
+        *self == Self::default()
     }
 }
 
@@ -538,7 +531,7 @@ pub struct Marker {
 
 impl Marker {
     pub fn is_zero(&self) -> bool {
-        self.name.is_empty() && self.number.is_empty() && self.type_.is_empty()
+        *self == Self::default()
     }
 }
 
@@ -554,7 +547,7 @@ pub struct Receiver {
 
 impl Receiver {
     pub fn is_zero(&self) -> bool {
-        self.number.is_empty() && self.type_.is_empty() && self.version.is_empty()
+        *self == Self::default()
     }
 }
 
@@ -568,7 +561,7 @@ pub struct Antenna {
 
 impl Antenna {
     pub fn is_zero(&self) -> bool {
-        self.number.is_empty() && self.type_.is_empty()
+        *self == Self::default()
     }
 }
 
@@ -615,20 +608,7 @@ pub struct Metadata {
 
 impl Metadata {
     pub fn is_zero(&self) -> bool {
-        self.version.is_empty()
-            && self.run.is_zero()
-            && self.comment.is_empty()
-            && self.marker.name.is_empty()
-            && self.marker.number.is_empty()
-            && self.marker.type_.is_empty()
-            && self.observer.is_empty()
-            && self.agency.is_empty()
-            && self.receiver.is_zero()
-            && self.antenna.is_zero()
-            && self.approx_position.is_none()
-            && self.antenna_delta.is_none()
-            && self.interval.is_none()
-            && self.leap_seconds.is_none()
+        *self == Self::default()
     }
 
     /// Merges `b` into `self`, with `b` taking precedence where set.

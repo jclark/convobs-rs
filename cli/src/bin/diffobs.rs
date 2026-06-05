@@ -32,66 +32,60 @@ const USAGE: &str = "usage: diffobs [options] a b\n\
   --ignore-marker          ignore marker metadata fields\n\
   --pr-tol --cp-tol --do-tol --cn0-tol --approx-pos-tol --antenna-delta-tol N\n";
 
-fn run(args: &[String]) -> Result<ExitCode, Error> {
-    let mut pr = None;
-    let mut cp = None;
-    let mut dop = None;
-    let mut cn0 = None;
-    let mut approx_pos = 0.00005;
-    let mut antenna_delta = 0.00005;
-    let mut ignore_blank_phase = false;
-    let mut ignore_marker = false;
-    let mut both_fmt = None;
-    let mut a_fmt = None;
-    let mut b_fmt = None;
-    let mut backend_arg = "auto".to_string();
-    let mut files: Vec<String> = Vec::new();
+fn build_command() -> clap::Command {
+    use clap::{Arg, ArgAction, Command};
+    let opt = |name: &'static str| Arg::new(name).long(name);
+    let flag = |name: &'static str| Arg::new(name).long(name).action(ArgAction::SetTrue);
+    Command::new("diffobs")
+        .no_binary_name(true)
+        .disable_help_flag(true)
+        .arg(flag("help").short('h'))
+        .arg(opt("format"))
+        .arg(opt("a-format"))
+        .arg(opt("b-format"))
+        .arg(opt("rinex-backend").default_value("auto"))
+        .arg(flag("ignore-blank-phase"))
+        .arg(flag("ignore-marker"))
+        .arg(opt("pr-tol"))
+        .arg(opt("cp-tol"))
+        .arg(opt("do-tol"))
+        .arg(opt("cn0-tol"))
+        .arg(opt("approx-pos-tol").default_value("0.00005"))
+        .arg(opt("antenna-delta-tol").default_value("0.00005"))
+        .arg(Arg::new("files").action(ArgAction::Append).num_args(0..))
+}
 
-    let mut i = 0;
-    while i < args.len() {
-        let a = &args[i];
-        let key = a.trim_start_matches('-');
-        let val = |i: &mut usize| -> Result<String, Error> {
-            *i += 1;
-            args.get(*i)
-                .cloned()
-                .ok_or_else(|| Error::usage(format!("missing value for {a}")))
-        };
-        let num = |s: String, a: &str| -> Result<f64, Error> {
-            s.parse()
-                .map_err(|_| Error::usage(format!("invalid number for {a}")))
-        };
-        match key {
-            "h" | "help" => {
-                print!("{USAGE}");
-                return Ok(ExitCode::SUCCESS);
-            }
-            "pr-tol" => pr = Some(num(val(&mut i)?, a)?),
-            "cp-tol" => cp = Some(num(val(&mut i)?, a)?),
-            "do-tol" => dop = Some(num(val(&mut i)?, a)?),
-            "cn0-tol" => cn0 = Some(num(val(&mut i)?, a)?),
-            "approx-pos-tol" => approx_pos = num(val(&mut i)?, a)?,
-            "antenna-delta-tol" => antenna_delta = num(val(&mut i)?, a)?,
-            "format" => both_fmt = Some(val(&mut i)?),
-            "a-format" => a_fmt = Some(val(&mut i)?),
-            "b-format" => b_fmt = Some(val(&mut i)?),
-            "rinex-backend" => backend_arg = val(&mut i)?,
-            "ignore-blank-phase" => ignore_blank_phase = true,
-            "ignore-marker" => ignore_marker = true,
-            _ if a.starts_with('-') && a != "-" => {
-                return Err(Error::usage(format!("unknown option {a}")))
-            }
-            _ => files.push(a.clone()),
-        }
-        i += 1;
+fn run(args: &[String]) -> Result<ExitCode, Error> {
+    let m = build_command()
+        .try_get_matches_from(args)
+        .map_err(|e| Error::usage(e.to_string()))?;
+    if m.get_flag("help") {
+        print!("{USAGE}");
+        return Ok(ExitCode::SUCCESS);
     }
+
+    let tol_opt = |id: &str| -> Result<Option<f64>, Error> {
+        m.get_one::<String>(id)
+            .map(|s| {
+                s.parse::<f64>()
+                    .map_err(|_| Error::usage(format!("invalid number for --{id}")))
+            })
+            .transpose()
+    };
+
+    let files: Vec<&String> = m
+        .get_many::<String>("files")
+        .map(|v| v.collect())
+        .unwrap_or_default();
     if files.len() != 2 {
         return Err(Error::usage("expected exactly two input files".to_string()));
     }
 
-    let a_format = parse_format(a_fmt.or(both_fmt.clone()))?;
-    let b_format = parse_format(b_fmt.or(both_fmt))?;
-    let backend = convobs::parse_rinex_backend(&backend_arg).map_err(Error::Usage)?;
+    let both = m.get_one::<String>("format").cloned();
+    let a_format = parse_format(m.get_one::<String>("a-format").cloned().or(both.clone()))?;
+    let b_format = parse_format(m.get_one::<String>("b-format").cloned().or(both))?;
+    let backend = convobs::parse_rinex_backend(m.get_one::<String>("rinex-backend").unwrap())
+        .map_err(Error::Usage)?;
 
     // Exact f64 for obsj on both sides; the looser RINEX text precision otherwise.
     let default_tol = if a_format == ObsFormat::Obsj && b_format == ObsFormat::Obsj {
@@ -100,18 +94,20 @@ fn run(args: &[String]) -> Result<ExitCode, Error> {
         0.0005
     };
     let tol = ObsTolerances {
-        pr: pr.unwrap_or(default_tol),
-        cp: cp.unwrap_or(default_tol),
-        dop: dop.unwrap_or(default_tol),
-        cn0: cn0.unwrap_or(default_tol),
+        pr: tol_opt("pr-tol")?.unwrap_or(default_tol),
+        cp: tol_opt("cp-tol")?.unwrap_or(default_tol),
+        dop: tol_opt("do-tol")?.unwrap_or(default_tol),
+        cn0: tol_opt("cn0-tol")?.unwrap_or(default_tol),
     };
     let mtol = MetadataTolerances {
-        approx_pos,
-        antenna_delta,
+        approx_pos: tol_opt("approx-pos-tol")?.unwrap(),
+        antenna_delta: tol_opt("antenna-delta-tol")?.unwrap(),
     };
+    let ignore_blank_phase = m.get_flag("ignore-blank-phase");
+    let ignore_marker = m.get_flag("ignore-marker");
 
-    let (a_meta, a_obs) = read_obs_file(&files[0], a_format, backend)?;
-    let (b_meta, b_obs) = read_obs_file(&files[1], b_format, backend)?;
+    let (a_meta, a_obs) = read_obs_file(files[0], a_format, backend)?;
+    let (b_meta, b_obs) = read_obs_file(files[1], b_format, backend)?;
 
     let stdout = io::stdout();
     let mut out = io::BufWriter::new(stdout.lock());

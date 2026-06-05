@@ -3,6 +3,7 @@ name = "convobs-cli"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 
 [lib]
 name = "convobs"

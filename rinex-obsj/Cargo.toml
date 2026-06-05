@@ -3,7 +3,7 @@ name = "rinex-obsj"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license = "MPL-2.0"
+license.workspace = true
 description = "Bridge between the obsj observation model and the `rinex` crate, shaped for upstreaming."
 
 [dependencies]

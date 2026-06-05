@@ -3,7 +3,7 @@ name = "obsj"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-license = "MIT OR Apache-2.0"
+license.workspace = true
 description = "The obsj GNSS observation format and model: serde (de)serialization, the arc/loss-of-lock machinery, and a semantic diff."
 
 [dependencies]

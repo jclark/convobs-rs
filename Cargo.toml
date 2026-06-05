@@ -6,6 +6,7 @@ members = ["obsj", "rinex-obsj", "cli"]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.96"
+license = "MIT"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

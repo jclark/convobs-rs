@@ -78,9 +78,16 @@ for the `(sat,sig)` maps (SipHash was ~14%), skip non-RXM-RAWX UBX before
 decoding, a hand-written obsj serializer instead of `#[serde(flatten)]`, and one
 CRC/parse per packet-log RTCM frame. On `--interval 30 → obsj` packet logs the
 workspace build is **≈12–40× faster than Go with ≈5× less memory** (peak RSS
-< 4 MB on a 1.3 GB log), output bit-identical at exact f64. What remains in the
-profile is rtcm-rs's MSM decode and serde_json — library/inherent. Full
-methodology, the profile, and per-file numbers are in **`PERFORMANCE.md`**.
+< 4 MB on a 1.3 GB log), output bit-identical at exact f64.
+
+The obsj **input** path was profiled too: it now parses each line in a single
+pass (no `serde_json::Value` intermediate; observation floats captured as raw
+JSON tokens and rounded with std `f64::from_str`, so `arbitrary_precision` is
+gone) and **streams** records straight into the sink. obsj→obsj dropped from
+6.6 s / 498 MB to **2.9 s / 3.2 MB** (O(1) memory). RINEX output still buffers
+(inherent — the header needs every epoch). What remains in the profile is
+rtcm-rs's MSM decode and serde_json — library/inherent. Full methodology, the
+profile, and per-file numbers are in **`PERFORMANCE.md`**.
 
 ## How to reproduce
 

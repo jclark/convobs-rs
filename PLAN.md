@@ -44,8 +44,9 @@ every edge case; Unicore (uncb/unca) input.
 `(sat,sig)`, compare per field within tolerance):
 
 - **obsj — exact f64 (tolerance 0).** serde + `ryu` round-trips floats
-  bit-exactly; the reader enables serde_json `arbitrary_precision` so parsing is
-  correctly rounded (serde_json's default float parse is not).
+  bit-exactly; the reader captures each observation float as a raw JSON token
+  (`serde_json` `raw_value`) and rounds it with std `f64::from_str`, which is
+  correctly rounded — serde_json's own float parse is not.
 - **RINEX — 5e-4** (its three-decimal text precision).
 - Independent references: convbin (RTKLIB-EX) goldens, and the Go `convobs`
   binary run side-by-side.

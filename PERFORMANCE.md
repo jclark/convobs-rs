@@ -71,6 +71,34 @@ bulk of it.
 output bit-identical at exact f64. Memory is O(1) in input size (obsj is
 streamed), so a 1.3 GB log peaks under 4 MB.
 
+## obsj as input (`-r obsj`)
+
+The obsj *reader* was the second target. The profile showed it spread across
+serde_json with a lot of allocation: the reader parsed each line to a
+`serde_json::Value` and then `from_value` into the record — two passes, forced
+by `#[serde(flatten)]` on the wire type — and the whole file was buffered in a
+`Vec`. Two fixes:
+
+- **One-pass parse.** Read each line directly into a flat record struct (no
+  `Value`, no `flatten`). Observation floats are captured as raw JSON tokens
+  (serde_json `RawValue`) and rounded with std `f64::from_str`, which is
+  correctly rounded — so `arbitrary_precision` (whose correct rounding only
+  applies via `Value`, and which is slow) was dropped entirely. Round-trip stays
+  bit-exact.
+- **Streaming.** obsj records are pushed straight into the sink as they are
+  parsed instead of collected, so obsj→obsj is O(1) memory.
+
+On a 398 MB / 2.88 M-record obsj file:
+
+| path | before | after |
+|---|---|---|
+| `-r obsj --to obsj` | 6.61 s, 498 MB | **2.90 s, 3.2 MB** |
+| `-r obsj --to rinex` | 8.06 s, 1.66 GB | **4.26 s, 1.41 GB** |
+
+obsj→obsj is now fully streamed (3 MB regardless of size). obsj→RINEX still
+buffers — the RINEX writer needs every epoch to emit the header and sorted body
+— but no longer double-buffers the input.
+
 ## Left for later (not "easy")
 
 - The remaining `--interval 30` cost is rtcm-rs's MSM decode itself plus the

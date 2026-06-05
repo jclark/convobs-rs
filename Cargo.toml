@@ -9,10 +9,11 @@ rust-version = "1.96"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-# arbitrary_precision keeps each JSON number's exact token text, so reading a
-# float and writing it back is lossless. obsj is compared at exact-f64, so the
-# reader must round to the nearest f64; serde_json's default parser does not.
-serde_json = { version = "1", features = ["arbitrary_precision"] }
+# raw_value lets the reader capture each observation float's exact JSON token and
+# round it with Rust's std `f64::from_str` (correctly rounded), so obsj floats
+# round-trip bit-exactly in a single parse pass — without serde_json's slower
+# arbitrary_precision path, whose correct rounding only applies via `Value`.
+serde_json = { version = "1", features = ["raw_value"] }
 rtcm-rs = "0.11"
 ublox = "0.10"
 rinex = { version = "0.22", default-features = false, features = ["obs", "serde"] }

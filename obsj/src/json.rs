@@ -6,9 +6,14 @@
 //! `t` (observation vs metadata record) and rejects the legacy keys
 //! `ssi`/`lli`/`ll`.
 
-use crate::obs::{Instant, Metadata, SignalObservation};
+use crate::obs::{
+    Antenna, GpsTime, Instant, Marker, Metadata, MetadataRun, Receiver, SatId, SigId,
+    SignalObservation, SignalValues,
+};
 use crate::sink::Sink;
-use serde_json::Value;
+use serde::de::IgnoredAny;
+use serde::Deserialize;
+use serde_json::value::RawValue;
 use std::io::{self, BufRead, Write};
 
 /// Streaming obsj sink: one JSON line per record, O(1) memory.
@@ -39,10 +44,9 @@ impl<W: Write> Sink for ObsJsonSink<W> {
     }
 }
 
-/// Reads all obsj records from `r`, merging metadata and collecting observations.
-pub fn read_obsj(r: impl BufRead) -> Result<(Metadata, Vec<SignalObservation>), String> {
-    let mut meta = Metadata::default();
-    let mut obs = Vec::new();
+/// Streams obsj records from `r` into `sink` — O(1) memory: each line is parsed
+/// and pushed (metadata or observation) without buffering the whole file.
+pub fn stream_obsj<S: Sink>(r: impl BufRead, sink: &mut S) -> Result<(), String> {
     for (i, line) in r.lines().enumerate() {
         let line = line.map_err(|e| e.to_string())?;
         let trimmed = line.trim();
@@ -50,11 +54,38 @@ pub fn read_obsj(r: impl BufRead) -> Result<(Metadata, Vec<SignalObservation>), 
             continue;
         }
         match parse_record(trimmed).map_err(|e| format!("obsj line {}: {}", i + 1, e))? {
-            Record::Observation(o) => obs.push(o),
-            Record::Metadata(m) => meta.merge(&m),
+            Record::Observation(o) => sink.observation(&o).map_err(|e| e.to_string())?,
+            Record::Metadata(m) => sink.metadata(&m).map_err(|e| e.to_string())?,
         }
     }
-    Ok((meta, obs))
+    Ok(())
+}
+
+/// Reads all obsj records into memory, merging metadata and collecting
+/// observations. Used where random access is needed (the diff comparator);
+/// conversion uses [`stream_obsj`] instead.
+pub fn read_obsj(r: impl BufRead) -> Result<(Metadata, Vec<SignalObservation>), String> {
+    #[derive(Default)]
+    struct Collector {
+        meta: Metadata,
+        obs: Vec<SignalObservation>,
+    }
+    impl Sink for Collector {
+        fn metadata(&mut self, m: &Metadata) -> io::Result<()> {
+            self.meta.merge(m);
+            Ok(())
+        }
+        fn observation(&mut self, o: &SignalObservation) -> io::Result<()> {
+            self.obs.push(*o);
+            Ok(())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut c = Collector::default();
+    stream_obsj(r, &mut c)?;
+    Ok((c.meta, c.obs))
 }
 
 enum Record {
@@ -62,25 +93,131 @@ enum Record {
     Metadata(Metadata),
 }
 
+/// One obsj line, in a single serde pass. A flat struct (no `Value`
+/// intermediate, no `#[serde(flatten)]`) so deserialization is one pass — the
+/// `flatten` on the wire type is what forces a buffering pass on read. An
+/// observation record carries `t`; a metadata record does not. Observation
+/// floats are captured as raw JSON tokens and rounded with std `f64::from_str`
+/// (correctly rounded) so they round-trip bit-exactly. The legacy keys are
+/// captured so they can be rejected.
+#[derive(Deserialize)]
+struct RawRecord<'a> {
+    t: Option<GpsTime>,
+    sat: Option<SatId>,
+    sig: Option<SigId>,
+    frq: Option<i8>,
+    #[serde(borrow)]
+    pr: Option<&'a RawValue>,
+    cp: Option<&'a RawValue>,
+    #[serde(rename = "do")]
+    dop: Option<&'a RawValue>,
+    cn0: Option<&'a RawValue>,
+    arc: Option<u32>,
+    hc: Option<bool>,
+    bt: Option<bool>,
+    version: Option<String>,
+    run: Option<MetadataRun>,
+    comment: Option<Vec<String>>,
+    marker: Option<Marker>,
+    observer: Option<String>,
+    agency: Option<String>,
+    receiver: Option<Receiver>,
+    antenna: Option<Antenna>,
+    #[serde(rename = "approxPosition")]
+    approx_position: Option<[f64; 3]>,
+    #[serde(rename = "antennaDelta")]
+    antenna_delta: Option<[f64; 3]>,
+    interval: Option<f64>,
+    #[serde(rename = "leapSeconds")]
+    leap_seconds: Option<i16>,
+    ssi: Option<IgnoredAny>,
+    lli: Option<IgnoredAny>,
+    ll: Option<IgnoredAny>,
+}
+
+/// Parses a raw JSON number token with std's correctly-rounded float parser.
+fn token_f64(v: Option<&RawValue>) -> Result<Option<f64>, String> {
+    match v {
+        Some(raw) => raw
+            .get()
+            .parse::<f64>()
+            .map(Some)
+            .map_err(|_| format!("invalid number {:?}", raw.get())),
+        None => Ok(None),
+    }
+}
+
+fn token_f32(v: Option<&RawValue>) -> Result<Option<f32>, String> {
+    match v {
+        Some(raw) => raw
+            .get()
+            .parse::<f32>()
+            .map(Some)
+            .map_err(|_| format!("invalid number {:?}", raw.get())),
+        None => Ok(None),
+    }
+}
+
 fn parse_record(line: &str) -> Result<Record, String> {
-    let value: Value = serde_json::from_str(line).map_err(|e| e.to_string())?;
-    let obj = value.as_object().ok_or("record is not a JSON object")?;
-    if obj.contains_key("t") {
-        for legacy in ["ssi", "lli"] {
-            if obj.contains_key(legacy) {
-                return Err(format!("obsj field {legacy:?} is not supported"));
+    let r: RawRecord = serde_json::from_str(line).map_err(|e| e.to_string())?;
+    match r.t {
+        Some(t) => {
+            if r.ssi.is_some() {
+                return Err("obsj field \"ssi\" is not supported".to_string());
             }
+            if r.lli.is_some() {
+                return Err("obsj field \"lli\" is not supported".to_string());
+            }
+            if r.ll.is_some() {
+                return Err("obsj field \"ll\" is not supported; use \"arc\"".to_string());
+            }
+            let sat = r.sat.ok_or("obsj observation record missing \"sat\"")?;
+            let sig = r.sig.ok_or("obsj observation record missing \"sig\"")?;
+            let v = SignalValues {
+                frq: r.frq,
+                pr: token_f64(r.pr)?,
+                cp: token_f64(r.cp)?,
+                dop: token_f64(r.dop)?,
+                cn0: token_f32(r.cn0)?,
+                arc: r.arc.unwrap_or(0),
+                hc: r.hc.unwrap_or(false),
+                bt: r.bt.unwrap_or(false),
+                ll: false,
+            };
+            Ok(Record::Observation(SignalObservation { t, sat, sig, v }))
         }
-        if obj.contains_key("ll") {
-            return Err("obsj field \"ll\" is not supported; use \"arc\"".to_string());
+        None => {
+            let mut m = Metadata::default();
+            if let Some(x) = r.version {
+                m.version = x;
+            }
+            if let Some(x) = r.run {
+                m.run = x;
+            }
+            if let Some(x) = r.comment {
+                m.comment = x;
+            }
+            if let Some(x) = r.marker {
+                m.marker = x;
+            }
+            if let Some(x) = r.observer {
+                m.observer = x;
+            }
+            if let Some(x) = r.agency {
+                m.agency = x;
+            }
+            if let Some(x) = r.receiver {
+                m.receiver = x;
+            }
+            if let Some(x) = r.antenna {
+                m.antenna = x;
+            }
+            m.approx_position = r.approx_position;
+            m.antenna_delta = r.antenna_delta;
+            m.interval = r.interval;
+            m.leap_seconds = r.leap_seconds;
+            Ok(Record::Metadata(m))
         }
-        serde_json::from_value(value)
-            .map(Record::Observation)
-            .map_err(|e| e.to_string())
-    } else {
-        serde_json::from_value(value)
-            .map(Record::Metadata)
-            .map_err(|e| e.to_string())
     }
 }
 

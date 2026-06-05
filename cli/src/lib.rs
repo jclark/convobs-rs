@@ -7,7 +7,7 @@ mod rinex_backend;
 use crate::error::Error;
 use crate::packetlog::{hex_decode, Entry};
 use crate::rinex_backend::{open_rinex_input, parse_backend, read_rinex, rinex_sink};
-use obsj::json::{read_obsj, ObsJsonSink};
+use obsj::json::{read_obsj, stream_obsj, ObsJsonSink};
 use obsj::obs::{Civil, Instant, Metadata, SignalObservation};
 use obsj::rtcm::{self, TimeInterval};
 use obsj::sink::{
@@ -693,34 +693,29 @@ fn now_instant() -> Instant {
 // ---------------------------------------------------------------------------
 
 fn convert_observation_inputs(cfg: &Config) -> Result<(), Error> {
-    let mut file_meta = Metadata::default();
-    let mut obs: Vec<SignalObservation> = Vec::new();
-    for path in &cfg.inputs {
-        let br: Box<dyn BufRead> = Box::new(BufReader::new(open_input(path)?));
-        let (m, o) = match cfg.from {
-            InputFormat::Rinex => {
-                let (backend, br) = open_rinex_input(cfg.rinex_backend, br)
-                    .map_err(|e| Error::conversion(input_error(path, &e)))?;
-                read_rinex(backend, br)
-            }
-            InputFormat::ObsJson => read_obsj(br),
-            _ => unreachable!(),
-        }
-        .map_err(|e| Error::conversion(input_error(path, &e)))?;
-        file_meta.merge(&m);
-        obs.extend(o);
-    }
-    let mut merged = file_meta;
-    merged.merge(&cfg.meta);
-
     let writer = open_writer(cfg.output_path.as_deref())?;
     let mut sink = build_sink(cfg, writer)?;
-    if !merged.is_zero() {
-        sink.metadata(&merged).map_err(|e| e.to_string())?;
+    for path in &cfg.inputs {
+        let br: Box<dyn BufRead> = Box::new(BufReader::new(open_input(path)?));
+        let ctx = |e: String| Error::conversion(input_error(path, &e));
+        match cfg.from {
+            InputFormat::Rinex => {
+                // RINEX parsing is whole-file; stream its observations onward.
+                let (backend, br) = open_rinex_input(cfg.rinex_backend, br).map_err(ctx)?;
+                let (m, obs) = read_rinex(backend, br).map_err(ctx)?;
+                sink.metadata(&m).map_err(|e| e.to_string())?;
+                for o in &obs {
+                    sink.observation(o).map_err(|e| e.to_string())?;
+                }
+            }
+            // obsj streams record by record — O(1) memory.
+            InputFormat::ObsJson => stream_obsj(br, &mut sink).map_err(ctx)?,
+            _ => unreachable!(),
+        }
     }
-    for o in &obs {
-        sink.observation(o).map_err(|e| e.to_string())?;
-    }
+    // Command-line / header-file metadata is applied last so it takes precedence
+    // when the sink merges (RINEX) or a reader re-merges (obsj).
+    sink.metadata(&cfg.meta).map_err(|e| e.to_string())?;
     sink.flush().map_err(|e| e.to_string())?;
     Ok(())
 }

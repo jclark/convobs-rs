@@ -1,0 +1,32 @@
+[package]
+name = "convobs"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+
+[[bin]]
+name = "convobs"
+path = "src/bin/convobs.rs"
+
+[[bin]]
+name = "diffobs"
+path = "src/bin/diffobs.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# arbitrary_precision keeps each JSON number's exact token text, so reading a
+# float and writing it back is lossless. obsj is compared at exact-f64, so the
+# reader must round to the nearest f64; serde_json's default parser does not.
+serde_json = { version = "1", features = ["arbitrary_precision"] }
+toml = "0.8"
+clap = { version = "4", features = ["std"], default-features = false }
+flate2 = "1"
+rinex = { version = "0.22", default-features = false, features = ["obs", "serde"] }
+rtcm-rs = "0.11"
+ublox = "0.10"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

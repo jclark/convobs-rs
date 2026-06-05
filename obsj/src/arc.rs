@@ -2,9 +2,9 @@
 //!
 //! On the wire, loss of lock is the monotonic per-`(sat, sig)` counter `arc`.
 //! Converters, however, only ever *detect a slip* — a per-observation boolean.
-//! Rather than each converter maintaining its own `arc` map (as the Go reference
-//! does), they emit the boolean on [`SignalValues::ll`] and the streaming
-//! [`LossOfLockSink`] accumulates it into `arc`. The inverse [`ArcToLl`]
+//! Rather than each converter maintaining its own `arc` map, they emit the
+//! boolean on [`SignalValues::ll`] and the streaming [`LossOfLockSink`]
+//! accumulates it into `arc`. The inverse [`ArcToLl`]
 //! transform turns `arc` back into the per-observation transition that feeds
 //! RINEX LLI and the diff comparator. One implementation, reused everywhere.
 

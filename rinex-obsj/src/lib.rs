@@ -194,7 +194,7 @@ fn build_rinex(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Erro
         // carrier phase that exists only to carry a loss-of-lock indicator (a
         // pseudorange-only signal that lost lock) cannot be represented and is
         // dropped — this is the documented limitation `--ignore-blank-phase`
-        // skips when validating this backend against convbin/Go goldens.
+        // skips when validating this backend against convbin goldens.
         if let Some(cp) = o.v.cp {
             push(TYPE_PHASE, cp, lli);
         }
@@ -217,9 +217,9 @@ fn build_rinex(meta: &Metadata, obs: &[SignalObservation]) -> Result<Rinex, Erro
     header.rcvr = build_receiver(meta);
     header.rcvr_antenna = build_antenna(meta);
     header.glo_channels = glo_channels;
-    // convbin, the Go reference, and the DIY backend all emit an APPROX POSITION
-    // line, zero-filled when unknown; match that so semantically-equal output
-    // does not read back as a spurious metadata difference.
+    // Both convbin and the DIY backend emit an APPROX POSITION line, zero-filled
+    // when unknown; match that so semantically-equal output does not read back as
+    // a spurious metadata difference.
     let pos = meta.approx_position.unwrap_or([0.0, 0.0, 0.0]);
     header.rx_position = Some((pos[0], pos[1], pos[2]));
     if let Some(ls) = meta.leap_seconds {

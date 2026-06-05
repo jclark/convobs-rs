@@ -1,15 +1,14 @@
-//! In-process golden test (Step 3 of TESTING-PLAN), mirroring Go's
-//! `TestGoldenFiles`. Each case converts a committed raw fixture with
+//! In-process golden test. Each case converts a committed raw fixture with
 //! `convobs::run_to_writer` into an in-memory buffer, reads the resulting RINEX
 //! back through the obsj model, and compares it — semantically, not byte-wise —
 //! against a committed golden RINEX file produced by RTKLIB Explorer's `convbin`
-//! (see `testdata/Makefile`). No Go binary, no `convbin`, no `tmp/` at test
+//! (see `testdata/Makefile`). No subprocess, no `convbin`, no `tmp/` at test
 //! time.
 //!
-//! The golden tolerances match Go's `goldenTolerances()`: pr/cp/do/cn0 at 5e-4
-//! (RINEX's three-decimal text precision), approxPos/antennaDelta at 5e-5. The
-//! two RTCM cases pass `ignore_marker` because convbin records the RTCM station
-//! id as the marker *name* while convobs records it as the *number*.
+//! The golden tolerances are pr/cp/do/cn0 at 5e-4 (RINEX's three-decimal text
+//! precision), approxPos/antennaDelta at 5e-5. The two RTCM cases pass
+//! `ignore_marker` because convbin records the RTCM station id as the marker
+//! *name* while convobs records it as the *number*.
 //!
 //! Built with `--features convobs-cli/rinex-crate`, the suite drives the crate
 //! RINEX backend instead of the default DIY backend, and ignores blank phase

@@ -2,9 +2,9 @@
 
 use obsj::obs::{Civil, Instant};
 
-/// The fixed clock the golden tests inject: 2026-05-19T00:00:00Z, matching the
-/// Go `TestGoldenFiles` `now`. The in-scope cases derive their week from the
-/// filename or epoch, so the value only needs to be deterministic.
+/// The fixed clock the golden tests inject: 2026-05-19T00:00:00Z. The in-scope
+/// cases derive their week from the filename or epoch, so the value only needs
+/// to be deterministic.
 pub fn fixed_now() -> Instant {
     Instant::from_civil(Civil {
         year: 2026,

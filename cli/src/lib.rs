@@ -96,10 +96,9 @@ pub fn run(args: &[String]) -> Result<(), Error> {
 }
 
 /// Test/embedding seam: runs a parsed conversion against a caller-supplied
-/// writer and clock — mirrors Go's `convJob{out}.run(now)`. `--output` is
-/// ignored here; the provided writer wins, and `now` is injected for
-/// determinism — it sets the `run.date` metadata default and bounds RTCM week
-/// resolution, so the whole run is reproducible.
+/// writer and clock. `--output` is ignored here; the provided writer wins, and
+/// `now` is injected for determinism — it sets the `run.date` metadata default
+/// and bounds RTCM week resolution, so the whole run is reproducible.
 pub fn run_to_writer<W: Write + ?Sized>(
     args: &[String],
     out: &mut W,

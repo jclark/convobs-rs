@@ -15,8 +15,8 @@ pub trait Sink {
 
 const DECIMATION_ROUND_TICKS: i64 = 100 * 1_000_000 / TICK_NS; // 100 ms in ticks
 
-/// Validates a decimation interval (nanoseconds) against the same rules Go uses,
-/// returning the interval in ticks.
+/// Validates a decimation interval (nanoseconds), returning the interval in
+/// ticks.
 pub fn decimation_interval_ticks(interval_ns: i64) -> Result<i64> {
     if interval_ns < 1_000_000_000 {
         return Err(Error::Interval(
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn rejects_invalid_interval() {
         // Subsecond, sub-tick, and non-day-divisor intervals each fail with a
-        // distinct message (mirrors Go's NewDecimationSink checks).
+        // distinct message.
         assert!(decimation_interval_ticks(500_000_000)
             .unwrap_err()
             .to_string()
